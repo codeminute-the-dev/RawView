@@ -1,3 +1,4 @@
+# --- shipped / generated ---
 build/
 dist/
 dist_installer/
@@ -14,3 +15,16 @@ __pycache__/
 venv/
 *.egg-info/
 *.log
+
+# --- IDE / secrets (not application source) ---
+.cursor/
+.env
+.env.*
+rawview.env
+
+# --- Ghidra / JDK trees if ever copied into the repo ---
+# The app downloads these under %LOCALAPPDATA%/RawView/ - do not commit multi-GB bundles.
+/ghidra_bundle/
+/ghidra_extract/
+/temurin_bundle/
+/temurin*_extract/
