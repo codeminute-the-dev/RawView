@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from rawview.theme_ids import THEME_IDS as _RAWVIEW_THEME_IDS_TUPLE
+
+_RAWVIEW_THEME_IDS = frozenset(_RAWVIEW_THEME_IDS_TUPLE)
+
+
+def user_data_dir() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "RawView"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def user_settings_env_path() -> Path:
+    """Per-user settings file (preferred for the Qt app)."""
+    return user_data_dir() / "rawview.env"
+
+
+def _default_project_dir() -> Path:
+    return user_data_dir() / "ghidra_projects"
+
+
+def parse_ghidra_jvm_max_heap(value: str | None) -> str:
+    """
+    Return a valid ``-Xmx`` *value* only (no ``-Xmx`` prefix), e.g. ``8g`` or ``8192m``.
+
+    Suffix ``g``, ``m``, or ``k`` is required so bare numbers are not mistaken for bytes.
+    """
+    if value is None:
+        return "8g"
+    s = str(value).strip()
+    if not s:
+        return "8g"
+    if not re.fullmatch(r"[0-9]+[gGmMkK]", s):
+        raise ValueError(
+            "GHIDRA_JVM_MAX_HEAP must look like 8g, 16g, or 8192m (suffix g, m, or k required)."
+        )
+    return s[:-1] + s[-1].lower()
+
+
+def _env_files() -> tuple[Path, ...]:
+    """Later entries override earlier (cwd `.env` wins over user file for developers)."""
+    user = user_settings_env_path()
+    cwd = Path.cwd() / ".env"
+    return (user, cwd)
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=_env_files(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-opus-4-6", validation_alias="ANTHROPIC_MODEL")
+
+    ghidra_install_dir: Path | None = Field(default=None, validation_alias="GHIDRA_INSTALL_DIR")
+    ghidra_bundle_url: str = Field(
+        default="",
+        validation_alias="GHIDRA_BUNDLE_URL",
+        description="Override URL for the Ghidra public zip download.",
+    )
+
+    rawview_auto_start_bridge: bool = Field(default=True, validation_alias="RAWVIEW_AUTO_START_BRIDGE")
+
+    @field_validator("ghidra_install_dir", mode="before")
+    @classmethod
+    def _empty_ghidra_dir_none(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        return v
+
+    @field_validator("rawview_java_classes_dir", mode="before")
+    @classmethod
+    def _empty_java_classes_none(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        return v
+
+    @field_validator("ghidra_jvm_max_heap", mode="before")
+    @classmethod
+    def _normalize_jvm_heap(cls, v: object) -> str:
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return "8g"
+        return parse_ghidra_jvm_max_heap(str(v))
+
+    java_executable: str = Field(default="java", validation_alias="JAVA_EXECUTABLE")
+    ghidra_jvm_max_heap: str = Field(default="8g", validation_alias="GHIDRA_JVM_MAX_HEAP")
+    py4j_port: int = Field(default=25333, validation_alias="PY4J_PORT")
+    rawview_project_dir: Path = Field(default_factory=_default_project_dir, validation_alias="RAWVIEW_PROJECT_DIR")
+
+    rawview_java_classpath: str | None = Field(default=None, validation_alias="RAWVIEW_JAVA_CLASSPATH")
+    rawview_java_classes_dir: Path | None = Field(default=None, validation_alias="RAWVIEW_JAVA_CLASSES_DIR")
+
+    agent_max_turns: int = Field(default=32, validation_alias="AGENT_MAX_TURNS")
+    agent_history_messages: int = Field(default=96, validation_alias="AGENT_HISTORY_MESSAGES")
+    agent_extended_thinking: bool = Field(default=True, validation_alias="AGENT_EXTENDED_THINKING")
+    agent_thinking_budget_tokens: int = Field(
+        default=4096,
+        ge=1024,
+        le=100_000,
+        validation_alias="AGENT_THINKING_BUDGET_TOKENS",
+    )
+    # Anthropic Messages API default is 1.0; lower values favor analytical / tool-stable behavior per docs.
+    agent_temperature: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        validation_alias="AGENT_TEMPERATURE",
+    )
+
+    rawview_theme: str = Field(default="tokyo_night", validation_alias="RAWVIEW_THEME")
+
+    @field_validator("rawview_theme", mode="before")
+    @classmethod
+    def _normalize_theme(cls, v: object) -> object:
+        if v is None or str(v).strip() == "":
+            return "tokyo_night"
+        t = str(v).strip().lower().replace("-", "_")
+        return t if t in _RAWVIEW_THEME_IDS else "tokyo_night"
+
+
+def load_settings() -> Settings:
+    return Settings()
+
+
+def save_user_settings_file(updates: dict[str, str]) -> Path:
+    """
+    Write key=value pairs to the user `rawview.env` file (merges over existing keys).
+    Empty string values remove that key from the file.
+    """
+    path = user_settings_env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                existing[k.strip()] = v.strip()
+    for k, v in updates.items():
+        if v == "":
+            existing.pop(k, None)
+        else:
+            existing[k] = v
+    lines_out = ["# RawView user settings (written by the Settings dialog)", ""]
+    for k in sorted(existing.keys()):
+        lines_out.append(f"{k}={existing[k]}")
+    lines_out.append("")
+    path.write_text("\n".join(lines_out), encoding="utf-8")
+    return path

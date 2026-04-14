@@ -1,0 +1,2 @@
+# Editable install: repo root is the parent of this folder.
+-e ..

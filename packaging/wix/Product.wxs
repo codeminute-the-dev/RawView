@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- Per-user MSI. File list comes from Heat (_Harvest.wxs). Bump Product Version for upgrades. -->
+  <Product
+      Id="*"
+      Name="RawView"
+      Language="1033"
+      Version="0.1.0.0"
+      Manufacturer="RawView"
+      UpgradeCode="B2C5D8E1-F4A7-4B9C-8D0E-1F2A3B4C5D6E">
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perUser"
+        InstallPrivileges="limited"
+        Platform="x64"
+        Description="RawView - Qt + Ghidra reverse engineering UI" />
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of RawView is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <!-- Add/Remove Programs + installer branding icon (same artwork as in-app / splash). -->
+    <Icon Id="RawViewApp.ico" SourceFile="app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="RawViewApp.ico" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="RawView" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="RawView" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- Shortcuts + shell registration: Start / search index / Win+R "RawView" (App Paths). -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppPathsRawView" Guid="B8E3C1A2-9F0D-4E5B-8C7A-1D2E3F4A5B6C">
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\Microsoft\Windows\CurrentVersion\App Paths\RawView.exe"
+            Type="string"
+            Value="[INSTALLFOLDER]RawView.exe"
+            KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Component Id="ShortcutsFeature" Directory="ApplicationProgramsFolder" Guid="A1B2C3D4-E5F6-4789-A0B1-C2D3E4F5A6B7">
+      <RegistryValue
+          Root="HKCU"
+          Key="Software\RawView\Installer"
+          Name="Shortcuts"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      <Shortcut
+          Id="StartMenuRawView"
+          Name="RawView"
+          Directory="ApplicationProgramsFolder"
+          Target="[INSTALLFOLDER]RawView.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="RawViewApp.ico"
+          Description="RawView" />
+      <Shortcut
+          Id="DesktopRawView"
+          Name="RawView"
+          Directory="DesktopFolder"
+          Target="[INSTALLFOLDER]RawView.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="RawViewApp.ico"
+          Description="RawView" />
+      <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="RawView" Level="1">
+      <ComponentGroupRef Id="Harvested" />
+      <ComponentRef Id="ShortcutsFeature" />
+      <ComponentRef Id="AppPathsRawView" />
+    </Feature>
+
+    <UIRef Id="WixUI_Minimal" />
+  </Product>
+</Wix>

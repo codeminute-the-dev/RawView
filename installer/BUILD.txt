@@ -1,0 +1,50 @@
+RawView Windows installers - build steps
+=========================================
+
+A) MSI (recommended - IT-friendly, per-user)
+--------------------------------------------
+Prereqs:
+  - Python 3.11+ on PATH
+  - WiX Toolset v3.11-3.14 (MSI toolchain): https://github.com/wixtoolset/wix3/releases
+    Install the EXE, then either add …\WiX Toolset v3.xx\bin to PATH or set env var WIX
+    to the toolkit root (folder that contains the "bin" directory).
+
+From the repo root (folder with pyproject.toml):
+
+  build-msi.bat
+
+or:
+
+  powershell -ExecutionPolicy Bypass -File scripts\build-msi.ps1
+
+This runs PyInstaller, then Heat + Candle + Light. Output:
+
+  dist_installer\RawView-0.1.0.msi
+
+Install scope: per-user under %LOCALAPPDATA%\Programs\RawView (no admin).
+Light suppresses ICE38 / ICE64 / ICE91 for this Heat-generated layout.
+
+To rebuild only the MSI after changing WiX sources (PyInstaller output already exists):
+
+  powershell -File scripts\build-msi.ps1 -SkipPyInstaller
+
+
+B) Portable folder (no installer)
+---------------------------------
+  powershell -File scripts\build-windows.ps1
+  → dist\RawView\  (zip this folder)
+
+
+C) Inno Setup .exe (optional alternative)
+-----------------------------------------
+  After build-windows.ps1, open installer\RawView.iss in Inno Setup 6.
+  Output: dist_installer\RawView-Setup-0.1.0.exe
+
+
+Notes
+-----
+  - The MSI shows LICENSE in the wizard. Add/Remove Programs uses the same
+    app icon as RawView (packaging\wix\app_icon.ico, synced from branding).
+  - Ghidra/JDK/API keys are configured inside the app, not in the MSI.
+  - Bump Product Version in packaging\wix\Product.wxs (and MSI filename in
+    scripts\build-msi.ps1) when you ship a new release.

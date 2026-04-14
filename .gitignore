@@ -1,0 +1,15 @@
+build/
+dist/
+dist_installer/
+release/
+packaging/wix/_Harvest.wxs
+packaging/wix/License.rtf
+packaging/wix/obj/
+*.spec.bak
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+*.log

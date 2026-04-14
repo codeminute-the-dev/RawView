@@ -1,0 +1,459 @@
+"""Edit RawView settings persisted to %LOCALAPPDATA%/RawView/rawview.env."""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QSettings, Qt, Signal
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from rawview.config import (
+    Settings,
+    parse_ghidra_jvm_max_heap,
+    save_user_settings_file,
+    user_data_dir,
+)
+from rawview.ghidra_bootstrap import DEFAULT_GHIDRA_ZIP_URL, download_and_extract_ghidra, is_valid_ghidra_root
+from rawview.java_bootstrap import download_temurin_jdk
+from rawview.qt_ui.controller import RawViewQtController
+from rawview.qt_ui.shortcuts import SHORTCUT_DEFAULTS, load_shortcut_map, save_shortcut_map
+from rawview.qt_ui.themes import (
+    THEME_IDS,
+    main_window_stylesheet,
+    normalize_theme_id,
+    theme_display_name,
+)
+
+
+class _DownloadSignals(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent, controller: RawViewQtController) -> None:
+        super().__init__(parent)
+        self._ctrl = controller
+        self.setWindowTitle("RawView Settings")
+        self.setMinimumSize(620, 520)
+        self.resize(720, 580)
+        self.setStyleSheet(main_window_stylesheet(controller.settings.rawview_theme))
+
+        self._ghidra_dir = QLineEdit()
+        self._ghidra_url = QLineEdit()
+        self._java = QLineEdit()
+        self._heap = QLineEdit()
+        self._heap.setPlaceholderText("8g")
+        self._heap.setToolTip("JVM -Xmx for the headless Ghidra process (suffix g, m, or k required).")
+        self._port = QSpinBox()
+        self._port.setRange(1024, 65535)
+        self._project = QLineEdit()
+        self._classes = QLineEdit()
+        self._classpath = QTextEdit()
+        self._classpath.setPlaceholderText("Optional full Java classpath (overrides auto-discovery)")
+        self._classpath.setMaximumHeight(80)
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._model = QLineEdit()
+        self._max_turns = QSpinBox()
+        self._max_turns.setRange(1, 256)
+        self._hist = QSpinBox()
+        self._hist.setRange(1, 200)
+        self._agent_temp = QDoubleSpinBox()
+        self._agent_temp.setRange(0.0, 1.0)
+        self._agent_temp.setSingleStep(0.05)
+        self._agent_temp.setDecimals(2)
+        self._agent_temp.setToolTip(
+            "Anthropic Messages API: optional sampling temperature (default in API docs: 1.0). "
+            "Lower ≈ more analytical / steadier tool arguments; higher ≈ more varied prose. "
+            "Do not set top_p elsewhere - use temperature only."
+        )
+        self._think = QCheckBox("Agent extended thinking (models that support it only)")
+        self._think.setToolTip("If the model rejects this option, RawView retries without extended thinking.")
+        self._think_budget = QSpinBox()
+        self._think_budget.setRange(1024, 100_000)
+        self._think_budget.setSingleStep(1024)
+        self._auto_bridge = QCheckBox("Start Ghidra JVM automatically when RawView launches")
+        self._auto_bridge.setToolTip("When enabled, the boot screen waits for the Ghidra bridge to come up.")
+
+        self._theme = QComboBox()
+        for tid in THEME_IDS:
+            self._theme.addItem(theme_display_name(tid), tid)
+
+        browse_g = QPushButton("Browse...")
+        browse_g.clicked.connect(self._browse_ghidra)
+        browse_p = QPushButton("Browse...")
+        browse_p.clicked.connect(self._browse_project)
+        browse_c = QPushButton("Browse...")
+        browse_c.clicked.connect(self._browse_classes)
+
+        row_g = QHBoxLayout()
+        row_g.addWidget(self._ghidra_dir, stretch=1)
+        row_g.addWidget(browse_g)
+
+        row_p = QHBoxLayout()
+        row_p.addWidget(self._project, stretch=1)
+        row_p.addWidget(browse_p)
+
+        row_c = QHBoxLayout()
+        row_c.addWidget(self._classes, stretch=1)
+        row_c.addWidget(browse_c)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setHorizontalSpacing(14)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.addRow("Theme", self._theme)
+        form.addRow("Ghidra install directory", row_g)
+        hint = QLabel(
+            "Official builds can be downloaded from the boot screen or with the button below.\n"
+            f"Default bundle URL:\n{DEFAULT_GHIDRA_ZIP_URL}"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        form.addRow(hint)
+        form.addRow("Ghidra zip URL (optional override)", self._ghidra_url)
+        dl = QPushButton("Download & install Ghidra to AppData...")
+        dl.clicked.connect(self._download_ghidra)
+        form.addRow("", dl)
+        java_wrap = QWidget()
+        java_row = QHBoxLayout(java_wrap)
+        java_row.setContentsMargins(0, 0, 0, 0)
+        java_row.addWidget(self._java, stretch=1)
+        java_dl_btn = QPushButton("Download JDK...")
+        java_dl_btn.setToolTip("Download Eclipse Temurin OpenJDK 21 into AppData and set JAVA_EXECUTABLE.")
+        java_dl_btn.clicked.connect(self._download_java)
+        java_row.addWidget(java_dl_btn)
+        form.addRow("Java executable", java_wrap)
+        form.addRow("Ghidra JVM max heap (-Xmx)", self._heap)
+        form.addRow("Py4J port", self._port)
+        form.addRow("Ghidra project directory", row_p)
+        form.addRow("Compiled bridge classes dir", row_c)
+        form.addRow("RAWVIEW_JAVA_CLASSPATH", self._classpath)
+        form.addRow("", self._auto_bridge)
+        form.addRow("Anthropic API key", self._api_key)
+        form.addRow("Anthropic model", self._model)
+        form.addRow("", self._think)
+        form.addRow("Thinking budget (tokens)", self._think_budget)
+        form.addRow("Agent max turns", self._max_turns)
+        form.addRow("Agent history messages", self._hist)
+        form.addRow("Agent temperature (0-1)", self._agent_temp)
+
+        general_inner = QWidget()
+        general_inner.setLayout(form)
+        general_scroll = QScrollArea()
+        general_scroll.setWidgetResizable(True)
+        general_scroll.setWidget(general_inner)
+        general_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        general_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        general_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        general_scroll.setMinimumHeight(260)
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        general_scroll.setSizePolicy(sp)
+        general_page = QWidget()
+        gwrap = QVBoxLayout(general_page)
+        gwrap.setContentsMargins(4, 4, 4, 4)
+        gwrap.addWidget(general_scroll, stretch=1)
+
+        self._ui_state = QSettings(str(user_data_dir() / "ui_state.ini"), QSettings.Format.IniFormat)
+        self._shortcut_edits: dict[str, QLineEdit] = {}
+        keyboard_page = self._build_keyboard_tab()
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tabs.addTab(general_page, "General")
+        tabs.addTab(keyboard_page, "Keyboard")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+        root.addWidget(tabs, stretch=1)
+        root.addWidget(buttons)
+
+        self._load_from_settings(controller.settings)
+        self._dl_signals = _DownloadSignals()
+        self._dl_signals.progress.connect(self._on_dl_progress)
+        self._dl_signals.finished.connect(self._on_dl_finished)
+        self._java_dl_signals = _DownloadSignals()
+        self._java_dl_signals.progress.connect(self._on_java_dl_progress)
+        self._java_dl_signals.finished.connect(self._on_java_dl_finished)
+
+    def _build_keyboard_tab(self) -> QWidget:
+        page = QWidget()
+        vl = QVBoxLayout(page)
+        vl.setContentsMargins(4, 4, 4, 4)
+        overrides = load_shortcut_map(self._ui_state)
+        table = QTableWidget(len(SHORTCUT_DEFAULTS), 2)
+        table.setHorizontalHeaderLabels(["Action", "Shortcut (portable text)"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for row, (sid, (desc, default)) in enumerate(SHORTCUT_DEFAULTS.items()):
+            table.setItem(row, 0, QTableWidgetItem(desc))
+            ed = QLineEdit()
+            ed.setText(overrides.get(sid, default))
+            ed.setPlaceholderText(default)
+            table.setCellWidget(row, 1, ed)
+            self._shortcut_edits[sid] = ed
+        table.setMinimumHeight(220)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        vl.addWidget(table, stretch=1)
+        btn_row = QHBoxLayout()
+        reset = QPushButton("Reset all shortcuts to defaults")
+        reset.clicked.connect(self._reset_shortcut_fields)
+        btn_row.addWidget(reset)
+        btn_row.addStretch(1)
+        vl.addLayout(btn_row)
+        hint = QLabel(
+            "Examples: Ctrl+O, Ctrl+Shift+W. Stored next to the window layout in ui_state.ini."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        vl.addWidget(hint)
+        return page
+
+    def _reset_shortcut_fields(self) -> None:
+        for sid, ed in self._shortcut_edits.items():
+            _desc, default = SHORTCUT_DEFAULTS[sid]
+            ed.setText(default)
+
+    def _validate_and_save_shortcuts(self) -> bool:
+        out: dict[str, str] = {}
+        for sid, ed in self._shortcut_edits.items():
+            raw = ed.text().strip()
+            _desc, default = SHORTCUT_DEFAULTS[sid]
+            if not raw or raw == default:
+                continue
+            ks = QKeySequence(raw, QKeySequence.SequenceFormat.PortableText)
+            if ks.isEmpty():
+                QMessageBox.warning(
+                    self,
+                    "Invalid shortcut",
+                    f"Could not parse shortcut for {sid}: {raw!r}",
+                )
+                return False
+            out[sid] = ks.toString(QKeySequence.SequenceFormat.PortableText)
+        save_shortcut_map(self._ui_state, out)
+        return True
+
+    def _load_from_settings(self, s: Settings) -> None:
+        if s.ghidra_install_dir:
+            self._ghidra_dir.setText(str(s.ghidra_install_dir))
+        self._ghidra_url.setText(s.ghidra_bundle_url or DEFAULT_GHIDRA_ZIP_URL)
+        self._java.setText(s.java_executable)
+        self._heap.setText(s.ghidra_jvm_max_heap)
+        self._port.setValue(s.py4j_port)
+        self._project.setText(str(s.rawview_project_dir))
+        if s.rawview_java_classes_dir:
+            self._classes.setText(str(s.rawview_java_classes_dir))
+        if s.rawview_java_classpath:
+            self._classpath.setPlainText(s.rawview_java_classpath)
+        self._api_key.setText(s.anthropic_api_key)
+        self._model.setText(s.anthropic_model)
+        self._max_turns.setValue(s.agent_max_turns)
+        self._hist.setValue(s.agent_history_messages)
+        self._agent_temp.setValue(float(s.agent_temperature))
+        self._think.setChecked(s.agent_extended_thinking)
+        self._think_budget.setValue(s.agent_thinking_budget_tokens)
+        self._auto_bridge.setChecked(s.rawview_auto_start_bridge)
+        tid = normalize_theme_id(s.rawview_theme)
+        idx = self._theme.findData(tid)
+        if idx >= 0:
+            self._theme.setCurrentIndex(idx)
+
+    def _browse_ghidra(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Ghidra installation root")
+        if d:
+            self._ghidra_dir.setText(d)
+
+    def _browse_project(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Ghidra projects directory")
+        if d:
+            self._project.setText(d)
+
+    def _browse_classes(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Compiled Java classes root (io/rawview/...)")
+        if d:
+            self._classes.setText(d)
+
+    def _download_ghidra(self) -> None:
+        url = self._ghidra_url.text().strip() or DEFAULT_GHIDRA_ZIP_URL
+        reply = QMessageBox.question(
+            self,
+            "Download Ghidra",
+            "This downloads a large official Ghidra release zip into your AppData folder and extracts it.\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        def work() -> None:
+            try:
+
+                def prog(a: int, b: int, c: str) -> None:
+                    self._dl_signals.progress.emit(a, b, c)
+
+                root = download_and_extract_ghidra(
+                    zip_url=url,
+                    dest_parent=user_data_dir() / "ghidra_bundle",
+                    progress=prog,
+                )
+                self._dl_signals.finished.emit(True, str(root))
+            except Exception as e:
+                self._dl_signals.finished.emit(False, str(e))
+
+        threading.Thread(target=work, name="rawview-ghidra-dl", daemon=True).start()
+        QMessageBox.information(
+            self,
+            "Download started",
+            "Download runs in the background. This dialog will update when finished.",
+        )
+
+    def _download_java(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Download JDK",
+            "This downloads Eclipse Temurin OpenJDK 21 (official Adoptium build) into your AppData folder.\n"
+            "It is used only by RawView and does not require administrator rights.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        def work() -> None:
+            try:
+
+                def prog(a: int, b: int, c: str) -> None:
+                    self._java_dl_signals.progress.emit(a, b, c)
+
+                java_exe = download_temurin_jdk(
+                    dest_parent=user_data_dir() / "temurin_bundle",
+                    progress=prog,
+                )
+                self._java_dl_signals.finished.emit(True, str(java_exe))
+            except Exception as e:
+                self._java_dl_signals.finished.emit(False, str(e))
+
+        threading.Thread(target=work, name="rawview-java-dl", daemon=True).start()
+        QMessageBox.information(
+            self,
+            "Download started",
+            "JDK download runs in the background. This dialog title will show progress.",
+        )
+
+    def _on_java_dl_progress(self, a: int, b: int, c: str) -> None:
+        self.setWindowTitle(f"RawView Settings - {c}")
+
+    def _on_java_dl_finished(self, ok: bool, msg: str) -> None:
+        self.setWindowTitle("RawView Settings")
+        if ok:
+            self._java.setText(msg)
+            save_user_settings_file({"JAVA_EXECUTABLE": msg})
+            self._ctrl.reload_settings()
+            QMessageBox.information(self, "JDK installed", f"JAVA_EXECUTABLE set to:\n{msg}")
+        else:
+            QMessageBox.warning(self, "JDK download failed", msg)
+
+    def _on_dl_progress(self, a: int, b: int, c: str) -> None:
+        self.setWindowTitle(f"RawView Settings - {c}")
+
+    def _on_dl_finished(self, ok: bool, msg: str) -> None:
+        self.setWindowTitle("RawView Settings")
+        if ok:
+            self._ghidra_dir.setText(msg)
+            save_user_settings_file({"GHIDRA_INSTALL_DIR": msg, "GHIDRA_BUNDLE_URL": self._ghidra_url.text().strip()})
+            self._ctrl.reload_settings()
+            QMessageBox.information(self, "Ghidra", f"Installed at:\n{msg}")
+        else:
+            QMessageBox.warning(self, "Download failed", msg)
+
+    def _save(self) -> None:
+        if not self._validate_and_save_shortcuts():
+            return
+        data: dict[str, str] = {}
+        gd = self._ghidra_dir.text().strip()
+        if gd:
+            p = Path(gd)
+            if not is_valid_ghidra_root(p):
+                QMessageBox.warning(
+                    self,
+                    "Invalid Ghidra directory",
+                    "The selected folder does not look like a Ghidra root (expected "
+                    "`Ghidra/` and `support/` subfolders).",
+                )
+                return
+            data["GHIDRA_INSTALL_DIR"] = gd
+        else:
+            data["GHIDRA_INSTALL_DIR"] = ""
+        url = self._ghidra_url.text().strip()
+        if url:
+            data["GHIDRA_BUNDLE_URL"] = url
+        data["JAVA_EXECUTABLE"] = self._java.text().strip() or "java"
+        heap = self._heap.text().strip() or "8g"
+        try:
+            heap = parse_ghidra_jvm_max_heap(heap)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid heap size", str(e))
+            return
+        data["GHIDRA_JVM_MAX_HEAP"] = heap
+        data["PY4J_PORT"] = str(self._port.value())
+        data["RAWVIEW_PROJECT_DIR"] = self._project.text().strip() or str(user_data_dir() / "ghidra_projects")
+        cls = self._classes.text().strip()
+        data["RAWVIEW_JAVA_CLASSES_DIR"] = cls if cls else ""
+        cp = self._classpath.toPlainText().strip()
+        data["RAWVIEW_JAVA_CLASSPATH"] = cp if cp else ""
+        data["ANTHROPIC_API_KEY"] = self._api_key.text().strip()
+        data["ANTHROPIC_MODEL"] = self._model.text().strip() or "claude-opus-4-6"
+        data["AGENT_MAX_TURNS"] = str(self._max_turns.value())
+        data["AGENT_HISTORY_MESSAGES"] = str(self._hist.value())
+        data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
+        data["AGENT_EXTENDED_THINKING"] = "true" if self._think.isChecked() else "false"
+        data["AGENT_THINKING_BUDGET_TOKENS"] = str(self._think_budget.value())
+        data["RAWVIEW_AUTO_START_BRIDGE"] = "true" if self._auto_bridge.isChecked() else "false"
+        data["RAWVIEW_THEME"] = str(self._theme.currentData() or "tokyo_night")
+
+        save_user_settings_file(data)
+        self._ctrl.reload_settings()
+        self.accept()
+
+
+def open_settings_dialog(parent, controller: RawViewQtController) -> bool:
+    """Show modal settings. Returns True if the user saved."""
+    dlg = SettingsDialog(parent, controller)
+    return dlg.exec() == QDialog.DialogCode.Accepted
