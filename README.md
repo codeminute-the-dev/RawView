@@ -1,35 +1,29 @@
 # RawView
 
-RawView is a **native desktop UI** (Qt / PySide6) for manual reverse engineering. It talks to **Ghidra** running headlessly in the background (Java bridge via Py4J) so you can open binaries, run analysis, and use decompiler, disassembly, strings, imports/exports, xrefs, and related panes from one window.
+Desktop reverse-engineering UI for **Ghidra**. RawView runs as a **Qt (PySide6)** app, drives Ghidra headlessly over **Py4J**, and keeps decompiler, disassembly, strings, imports/exports, xrefs, and related tools in one window with a docked layout you can save.
 
-An **optional AI agent** dock can call the same Ghidra bridge when you add an Anthropic API key in **File → Settings**. Nothing else requires the network.
+**Optional:** an **agent** dock talks to the same bridge using the **Anthropic** API if you add a key under **File -> Settings**. Ghidra itself is not bundled; you point RawView at your install (or download URL) in settings.
 
-## Is it safe to publish this repository?
+## Features
 
-**Yes, if you publish the repository root** (the directory that contains this `README.md` and `pyproject.toml`). That is the whole project: packaging, WiX files, scripts, and the `rawview/` Python package. Do **not** publish only the inner `rawview/` folder; you would drop build metadata and the installer tooling.
-
-**What stays out of Git by design** (see `.gitignore`):
-
-- **Secrets**: `.env`, `.env.*`, and `rawview.env` if it ever appears in the tree (normal installs store settings under `%LOCALAPPDATA%\RawView\`, not in the clone).
-- **Large downloads**: local `ghidra_bundle/`, `temurin_bundle/`, etc. (the app fetches Ghidra and a JDK into `%LOCALAPPDATA%\RawView\` at runtime; those paths are not part of the repo).
-- **Build outputs**: `dist/`, `dist_installer/`, `build/`, `release/`, `rawview/java/out/`, generated WiX harvest files.
-
-**What you should still double-check before pushing**
-
-- No API keys or tokens pasted into tracked files.
-- No personal paths you do not want public (some people use machine-specific notes; keep them untracked or outside the repo).
+- Open binaries and run analysis through Ghidra without using the Ghidra Swing UI for day-to-day navigation.
+- Docked panes, themes, shortcuts, work notes, and optional RE session archives (`.rvre.zip` style workflow).
+- Windows-focused packaging: **PyInstaller** onedir + **WiX** per-user MSI. Use the repo **Releases** tab for prebuilt installers when the maintainer uploads them.
 
 ## Requirements
 
-- **Python** 3.11+
-- **Windows** is the primary target for the packaged app; development is oriented around the Windows build scripts.
-- **Ghidra**: you point RawView at a Ghidra installation (or ZIP URL) in settings; it is **not** redistributed inside this repository.
-- **JDK 21+** (e.g. Temurin): used to compile the small Java bridge; the app can download a JDK into AppData on first run, or you install one yourself.
+| | |
+|--|--|
+| OS | **Windows** (primary; scripts and MSI are Windows-oriented) |
+| Python | **3.11+** |
+| Ghidra | Your own install or official ZIP; configured inside the app |
+| JDK | **21+** for compiling the Java bridge; the app can fetch Temurin into `%LOCALAPPDATA%\RawView\` on first run |
 
-## Run from source
+## Build from source
 
 ```powershell
-cd path\to\RawView
+git clone https://github.com/<you>/RawView.git
+cd RawView
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
@@ -37,36 +31,51 @@ python -m rawview.scripts.compile_java
 python -m rawview
 ```
 
-## Windows installer (MSI)
+Editable install (`-e`) picks up Python changes without reinstalling.
 
-Needs [WiX Toolset 3.11+](https://github.com/wixtoolset/wix3/releases) (`heat.exe` / `candle.exe` / `light.exe` on PATH or `WIX` set to the toolkit root).
+## Windows MSI (from this repo)
+
+1. Install [WiX Toolset 3.11+](https://github.com/wixtoolset/wix3/releases) and ensure `bin` is on `PATH`, or set env var `WIX` to the toolkit root.
+2. From the repo root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-msi.ps1
 ```
 
-Produces `dist\RawView\` (PyInstaller onedir) and `dist_installer\RawView-0.1.0.msi`. Use `-SkipPyInstaller` if you only changed WiX and `dist\RawView` is already up to date.
+Output:
 
-## Source-only zip (no `dist/`)
+- `dist\RawView\`: portable PyInstaller layout (`RawView.exe`).
+- `dist_installer\RawView-0.1.0.msi`: per-user installer (Start menu + desktop shortcuts, full GPL license text in the wizard).
+
+Rebuild WiX only (reuse `dist\RawView`): `.\scripts\build-msi.ps1 -SkipPyInstaller`.
+
+## Repository layout
+
+| Path | Purpose |
+|------|---------|
+| `rawview/` | Application code; Java bridge **sources** under `rawview/java/` |
+| `packaging/` | `rawview.spec`, WiX `Product.wxs`, icons |
+| `scripts/` | `build-windows.ps1`, `build-msi.ps1`, `export-source-zip.ps1` |
+| `installer/` | Optional Inno Setup script (separate from the MSI pipeline) |
+| `pip/` | Helper scripts for editable installs in a dedicated folder |
+| `LICENSE` | GPLv3 full text |
+
+This repo is the **project root** (the folder with `pyproject.toml`). The inner `rawview/` directory is only the Python package name, not a separate publishable tree.
+
+## Source-only archive
+
+To zip exactly what Git tracks (no `dist/`, `build/`, etc.):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\export-source-zip.ps1
 ```
 
-Writes a zip next to the repo folder containing exactly what Git tracks.
+Writes `RawView-source-<version>.zip` on the parent of this repo folder.
 
-## Repository layout
+## Security
 
-| Path | Role |
-|------|------|
-| `pyproject.toml` | Package metadata and dependencies |
-| `rawview/` | Importable Python package and Java **sources** under `rawview/java/` |
-| `packaging/` | PyInstaller spec, WiX `Product.wxs`, icon assets |
-| `scripts/` | `build-windows.ps1`, `build-msi.ps1`, export helpers |
-| `installer/` | Optional Inno Setup script (separate from MSI pipeline) |
-| `pip/` | Optional editable-install helpers |
-| `LICENSE` | GNU General Public License v3 (full text) |
+Do **not** commit API keys, tokens, or `rawview.env` from your machine. Settings normally live under `%LOCALAPPDATA%\RawView\`. `.gitignore` excludes common secret filenames and large local Ghidra/JDK trees if they are ever copied next to the clone.
 
 ## License
 
-Licensed under the **GNU General Public License v3.0**; see `LICENSE`.
+[GNU General Public License v3.0](LICENSE).
