@@ -6,6 +6,7 @@ packaging/wix/_Harvest.wxs
 packaging/wix/License.rtf
 packaging/wix/obj/
 *.spec.bak
+rawview/java/out/
 __pycache__/
 *.py[cod]
 .pytest_cache/
