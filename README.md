@@ -1,8 +1,26 @@
+<p align="center">
+  <img src="assets/logo.png" width="120" alt="RawView logo">
+  <br><br>
+  <a href="https://github.com/codeminute-the-dev" title="CODEMINUTE on GitHub">
+    <img src="https://github.com/codeminute-the-dev.png" width="72" height="72" alt="CODEMINUTE">
+  </a>
+</p>
+
 # RawView
 
-Desktop reverse-engineering UI for **Ghidra**. RawView runs as a **Qt (PySide6)** app, drives Ghidra headlessly over **Py4J**, and keeps decompiler, disassembly, strings, imports/exports, xrefs, and related tools in one window with a docked layout you can save.
+AI-assisted reverse engineering for **Ghidra**: a **Qt (PySide6)** desktop app that drives Ghidra headlessly over **Py4J**, with decompiler, disassembly, strings, imports/exports, xrefs, and related tools in one docked window.
 
-**Optional:** an **agent** dock talks to the same bridge using the **Anthropic** API if you add a key under **File -> Settings**. Ghidra itself is not bundled; you point RawView at your install (or download URL) in settings.
+**Optional:** an **agent** dock uses the **Anthropic** API when you add a key under **File -> Settings**. Ghidra is not bundled; you point RawView at your install (or ZIP URL) in settings.
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL%20v3-blue" alt="GPL v3"></a>
+  <img src="https://img.shields.io/badge/platform-Windows-blue" alt="Windows">
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+</p>
+
+**Author:** [@codeminute-the-dev](https://github.com/codeminute-the-dev)
+
+---
 
 ## Features
 
@@ -22,7 +40,7 @@ Desktop reverse-engineering UI for **Ghidra**. RawView runs as a **Qt (PySide6)*
 ## Build from source
 
 ```powershell
-git clone https://github.com/<you>/RawView.git
+git clone https://github.com/codeminute-the-dev/RawView.git
 cd RawView
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
