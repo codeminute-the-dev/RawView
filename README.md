@@ -1,10 +1,12 @@
-<p align="center">
-  <img src="assets/banner.png" width="920" alt="RawView banner: pixel eye with binary and project text">
-  <br><br>
-  <a href="https://github.com/codeminute-the-dev" title="CODEMINUTE on GitHub">
-    <img src="https://github.com/codeminute-the-dev.png" width="72" height="72" alt="CODEMINUTE">
-  </a>
-</p>
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/codeminute-the-dev/RawView/master/assets/banner.png" width="920" alt="RawView banner">
+
+<br><br>
+
+<a href="https://github.com/codeminute-the-dev" title="CODEMINUTE on GitHub"><img src="https://github.com/codeminute-the-dev.png" width="72" height="72" alt="CODEMINUTE"></a>
+
+</div>
 
 # RawView
 
