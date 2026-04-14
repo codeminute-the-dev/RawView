@@ -64,10 +64,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build-msi.ps1
 
 Output:
 
-- `dist\RawView\`: portable PyInstaller layout (`RawView.exe`).
+- `dist\RawView\`: portable PyInstaller layout (`RawView.exe`). All Python dependencies from `pyproject.toml` are **frozen into** `_internal` at build time (there is no Python or `pip` on the user's PC for the MSI build).
+- `dist\RawView\BUNDLED_PYTHON_PACKAGES.txt`: `pip freeze` from the build machine after `pip install ".[dev]"`, shipped next to `RawView.exe` for transparency.
 - `dist_installer\RawView-0.1.0.msi`: per-user installer (Start menu + desktop shortcuts, full GPL license text in the wizard).
 
-Rebuild WiX only (reuse `dist\RawView`): `.\scripts\build-msi.ps1 -SkipPyInstaller`.
+Rebuild WiX only (reuse `dist\RawView`): `.\scripts\build-msi.ps1 -SkipPyInstaller` (the script still runs `pip install ".[dev]"` and refreshes `BUNDLED_PYTHON_PACKAGES.txt` before harvesting).
 
 ## Repository layout
 

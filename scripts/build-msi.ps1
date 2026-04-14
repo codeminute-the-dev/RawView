@@ -74,8 +74,33 @@ if (-not (Test-Path (Join-Path $DistApp "RawView.exe"))) {
 
 $pythonExe = Find-PythonExe
 if (-not $pythonExe) {
-    Write-Error "Python is required to generate packaging/wix/License.rtf from the repository LICENSE file."
+    Write-Error "Python is required to install project deps, record pip freeze, and generate packaging/wix/License.rtf."
 }
+
+# PyInstaller already embeds these packages under _internal; there is no pip on the end-user machine.
+# We still pip install from pyproject here so the build matches declared deps, then ship a freeze manifest next to RawView.exe.
+Write-Host "pip: install project + dev (pyproject) ..." -ForegroundColor Cyan
+Push-Location $Root
+try {
+    & $pythonExe -m pip install --upgrade pip
+    & $pythonExe -m pip install ".[dev]"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
+
+$freezeOut = Join-Path $DistApp "BUNDLED_PYTHON_PACKAGES.txt"
+Write-Host "pip: freeze -> $freezeOut" -ForegroundColor Cyan
+$header = @"
+# Python packages embedded in this RawView build (PyInstaller onedir).
+# Generated at MSI build time from the same environment used for pip install.
+# Do not pip install on end users' PCs; RawView.exe bundles the runtime.
+
+"@
+Set-Content -LiteralPath $freezeOut -Value $header -Encoding utf8
+& $pythonExe -m pip freeze | Add-Content -LiteralPath $freezeOut -Encoding utf8
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $genLic = Join-Path $Root "packaging\scripts\generate_license_rtf.py"
 Write-Host "License.rtf: generate from LICENSE ..." -ForegroundColor Cyan
 & $pythonExe $genLic --root $Root
