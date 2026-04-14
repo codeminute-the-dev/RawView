@@ -1,6 +1,8 @@
 # PyInstaller spec - run from repo root:  pyinstaller packaging\rawview.spec
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -26,6 +28,29 @@ datas = []
 if _res.is_dir():
     datas.append((str(_res), "rawview/qt_ui/resources"))
 binaries: list = []
+# py4j ships the JVM client JAR under <prefix>/share/py4j (not inside site-packages/py4j).
+# PyInstaller does not pick that up automatically, so Ghidra JVM boot fails without this.
+_share_py4j = Path(sys.prefix) / "share" / "py4j"
+if _share_py4j.is_dir():
+    datas.append((str(_share_py4j), "share/py4j"))
+else:
+    _base_share = Path(getattr(sys, "base_prefix", sys.prefix)) / "share" / "py4j"
+    if _base_share.is_dir():
+        datas.append((str(_base_share), "share/py4j"))
+
+# Ghidra JVM bridge: .class files from `python -m rawview.scripts.compile_java` (needs GHIDRA_INSTALL_DIR + JDK).
+_java_out = REPO_ROOT / "rawview" / "java" / "out"
+_java_marker = _java_out / "io" / "rawview" / "ghidra" / "GhidraServer.class"
+if _java_marker.is_file():
+    datas.append((str(_java_out), "rawview/java/out"))
+elif os.environ.get("RAWVIEW_REQUIRE_JAVA_CLASSES") == "1":
+    raise SystemExit(
+        "rawview/java/out is missing the Ghidra bridge (expected GhidraServer.class). "
+        "Set GHIDRA_INSTALL_DIR to your Ghidra root, ensure javac is available, then run:\n"
+        "  python -m rawview.scripts.compile_java\n"
+        "Or unset RAWVIEW_REQUIRE_JAVA_CLASSES to build without Ghidra support."
+    )
+
 hiddenimports = [
     "rawview",
     "rawview.qt_ui",
@@ -41,6 +66,8 @@ hiddenimports = [
     "certifi",
     "anthropic",
     "py4j",
+    # java_gateway loads this with __import__ at runtime when auto_convert=True (PyInstaller misses it).
+    "py4j.java_collections",
     "psutil",
 ]
 

@@ -72,6 +72,19 @@ if (-not (Test-Path (Join-Path $DistApp "RawView.exe"))) {
     Write-Error "Missing dist\RawView\RawView.exe - run PyInstaller first (omit -SkipPyInstaller)."
 }
 
+$distJavaMarker = Join-Path $DistApp "_internal\rawview\java\out\io\rawview\ghidra\GhidraServer.class"
+if (-not (Test-Path -LiteralPath $distJavaMarker)) {
+    $hint = if ($SkipPyInstaller) {
+        "You used -SkipPyInstaller but the existing dist layout has no bundled Java classes. Re-run without -SkipPyInstaller after compiling, or rebuild PyInstaller."
+    } else {
+        "Set GHIDRA_INSTALL_DIR to your Ghidra install root, ensure JDK javac is on PATH, then from the repo root run:  python -m rawview.scripts.compile_java`nRe-run this script so PyInstaller picks up rawview/java/out."
+    }
+    Write-Error @"
+MSI build aborted: Ghidra Java bridge is not bundled under dist\RawView\_internal\rawview\java\out\.
+$hint
+"@
+}
+
 $pythonExe = Find-PythonExe
 if (-not $pythonExe) {
     Write-Error "Python is required to install project deps, record pip freeze, and generate packaging/wix/License.rtf."

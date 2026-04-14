@@ -49,6 +49,11 @@ def _find_py4j_jar() -> Path:
     py4j_pkg = Path(py4j.__file__).resolve().parent
     collect(py4j_pkg)
 
+    # PyInstaller onedir: JAR is bundled under _MEIPASS/share/py4j (sys.prefix may match _MEIPASS).
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        collect(Path(meipass) / "share" / "py4j")
+
     for root in {Path(sys.prefix), Path(getattr(sys, "base_prefix", sys.prefix))}:
         collect(root / "share" / "py4j")
 
@@ -86,14 +91,28 @@ def _write_java_argfile(path: Path, java_args: list[str]) -> None:
 
 def _packaged_bridge_classes_dir() -> Path | None:
     """
-    When RawView is run from a source checkout, compiled classes may live at ``rawview/java/out``.
-    Returns that directory only if ``GhidraServer.class`` is present.
+    Compiled bridge classes live under ``rawview/java/out`` (repo, editable install, or PyInstaller onedir).
+
+    PyInstaller sets ``__file__`` under ``sys._MEIPASS/rawview/ghidra/`` even when the ``.py`` is not on disk;
+    bundling ``rawview/java/out`` as data next to that tree keeps resolution consistent.
     """
+    rel = Path("io") / "rawview" / "ghidra" / "GhidraServer.class"
+
+    def _try(rawview_root: Path) -> Path | None:
+        out = rawview_root / "java" / "out"
+        if (out / rel).is_file():
+            return out
+        return None
+
     rawview_pkg = Path(__file__).resolve().parent.parent
-    out = rawview_pkg / "java" / "out"
-    marker = out / "io" / "rawview" / "ghidra" / "GhidraServer.class"
-    if marker.is_file():
-        return out
+    hit = _try(rawview_pkg)
+    if hit is not None:
+        return hit
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        hit = _try(Path(meipass) / "rawview")
+        if hit is not None:
+            return hit
     return None
 
 

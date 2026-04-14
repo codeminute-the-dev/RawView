@@ -49,6 +49,20 @@ Write-Host "Using Python: $Python" -ForegroundColor DarkGray
 & $Python -m pip install --upgrade pip
 & $Python -m pip install ".[dev]"
 
+Write-Host "Java bridge: compile_java (set GHIDRA_INSTALL_DIR in .env or env; needs JDK javac on PATH) ..." -ForegroundColor Cyan
+& $Python -m rawview.scripts.compile_java
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$javaMarker = Join-Path $Root "rawview\java\out\io\rawview\ghidra\GhidraServer.class"
+if (-not (Test-Path -LiteralPath $javaMarker)) {
+    Write-Warning @"
+Ghidra Java bridge not compiled: rawview/java/out is missing GhidraServer.class.
+Frozen RawView will not start Ghidra until you set GHIDRA_INSTALL_DIR, run:
+  python -m rawview.scripts.compile_java
+then rebuild. For CI/release, set RAWVIEW_REQUIRE_JAVA_CLASSES=1 before PyInstaller to fail the build instead.
+"@
+}
+
 $spec = Join-Path $Root "packaging\rawview.spec"
 if (-not (Test-Path $spec)) {
     Write-Error "Missing spec: $spec"
