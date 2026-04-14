@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" width="120" alt="RawView logo">
+  <img src="assets/banner.png" width="1024" alt="RawView banner: pixel eye with binary code in the pupil">
   <br><br>
   <a href="https://github.com/codeminute-the-dev" title="CODEMINUTE on GitHub">
     <img src="https://github.com/codeminute-the-dev.png" width="72" height="72" alt="CODEMINUTE">
