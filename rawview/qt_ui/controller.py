@@ -14,6 +14,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from rawview.agent.anthropic_backoff import AnthropicBackoffInterrupted
 from rawview.agent.brain import AgentBrain
 from rawview.agent.conversation_summarize import (
     flatten_messages_for_summary,
@@ -86,6 +87,7 @@ class RawViewQtController(QObject):
         self._brain: AgentBrain | None = None
         self._agent_thread: threading.Thread | None = None
         self._agent_start_lock = threading.Lock()
+        self._agent_stop_event = threading.Event()
         self._active_program: str = ""
         self._re_autosave_lock = threading.Lock()
 
@@ -360,6 +362,7 @@ class RawViewQtController(QObject):
         self.functions_updated.emit(rows)
 
     def interrupt_agent(self) -> None:
+        self._agent_stop_event.set()
         if self._brain is not None:
             self._brain.interrupt()
 
@@ -448,17 +451,24 @@ class RawViewQtController(QObject):
                     thinking_budget_tokens=self.settings.agent_thinking_budget_tokens,
                     temperature=self.settings.agent_temperature,
                 )
+                if self._agent_stop_event.is_set():
+                    self._brain.interrupt()
 
                 def run() -> None:
+                    emit("agent_generating", {"active": True})
                     try:
-                        assert self._brain is not None
-                        self._brain.run_user_prompt(text)
-                    except Exception as e:
-                        logger.exception("agent")
-                        self.agent_event.emit(
-                            "agent_error",
-                            {"message": str(e), "trace": traceback.format_exc()},
-                        )
+                        try:
+                            assert self._brain is not None
+                            self._brain.run_user_prompt(text)
+                        except Exception as e:
+                            logger.exception("agent")
+                            self.agent_event.emit(
+                                "agent_error",
+                                {"message": str(e), "trace": traceback.format_exc()},
+                            )
+                    finally:
+                        self._agent_stop_event.clear()
+                        emit("agent_generating", {"active": False})
 
                 self._agent_thread = threading.Thread(target=run, name="rawview-agent", daemon=True)
                 self._agent_thread.start()
@@ -484,38 +494,47 @@ class RawViewQtController(QObject):
                     return
 
                 def run() -> None:
+                    emit("agent_generating", {"active": True})
                     try:
-                        snap = list(self.agent_memory.for_api())
-                        if not snap:
-                            emit("agent_error", {"message": "Nothing to summarize yet - chat history is empty."})
-                            return
-                        transcript = flatten_messages_for_summary(snap)
-                        if not transcript.strip():
-                            emit("agent_error", {"message": "Nothing to summarize yet - chat history is empty."})
-                            return
-                        summary = summarize_conversation_transcript(
-                            api_key=self.settings.anthropic_api_key,
-                            model=self.settings.anthropic_model,
-                            transcript=transcript,
-                        )
-                        before = len(snap)
-                        before_chars = len(transcript)
-                        self.agent_memory.clear()
-                        self.agent_memory.add_user(
-                            "[Session summary -  prior messages were compressed with /summarize to save context.]\n\n"
-                            + summary
-                        )
-                        emit(
-                            "conversation_summarized",
-                            {
-                                "api_messages_before": before,
-                                "transcript_chars": before_chars,
-                                "summary_chars": len(summary),
-                            },
-                        )
-                    except Exception as e:
-                        logger.exception("summarize")
-                        emit("agent_error", {"message": f"/summarize failed: {e}"})
+                        try:
+                            snap = list(self.agent_memory.for_api())
+                            if not snap:
+                                emit("agent_error", {"message": "Nothing to summarize yet - chat history is empty."})
+                                return
+                            transcript = flatten_messages_for_summary(snap)
+                            if not transcript.strip():
+                                emit("agent_error", {"message": "Nothing to summarize yet - chat history is empty."})
+                                return
+                            summary = summarize_conversation_transcript(
+                                api_key=self.settings.anthropic_api_key,
+                                model=self.settings.anthropic_model,
+                                transcript=transcript,
+                                emit=emit,
+                                should_abort=lambda: self._agent_stop_event.is_set(),
+                            )
+                            before = len(snap)
+                            before_chars = len(transcript)
+                            self.agent_memory.clear()
+                            self.agent_memory.add_user(
+                                "[Session summary -  prior messages were compressed with /summarize to save context.]\n\n"
+                                + summary
+                            )
+                            emit(
+                                "conversation_summarized",
+                                {
+                                    "api_messages_before": before,
+                                    "transcript_chars": before_chars,
+                                    "summary_chars": len(summary),
+                                },
+                            )
+                        except AnthropicBackoffInterrupted:
+                            emit("agent_stopped", {"reason": "interrupt"})
+                        except Exception as e:
+                            logger.exception("summarize")
+                            emit("agent_error", {"message": f"/summarize failed: {e}"})
+                    finally:
+                        self._agent_stop_event.clear()
+                        emit("agent_generating", {"active": False})
 
                 self._agent_thread = threading.Thread(target=run, name="rawview-summarize", daemon=True)
                 self._agent_thread.start()
@@ -652,17 +671,18 @@ class RawViewQtController(QObject):
                 if not meta.get("projectName"):
                     self.status_message.emit("Nothing to save: open a binary first.")
                     return
-                project_parent = Path(meta["projectsParent"])
-                project_name = meta["projectName"]
-                folder = project_parent / project_name
+                project_parent = Path(meta["projectsParent"]).expanduser()
+                project_name = str(meta["projectName"]).strip()
+                folder = (project_parent / project_name).resolve(strict=False)
                 ui = self.collect_re_session_ui_hints()
                 manifest = build_session_manifest(java_meta=meta, ui=ui)
                 zip_ghidra_project_folder(project_folder=folder, manifest=manifest, dest_zip=dest)
                 self.status_message.emit(f"RE session saved ({dest.name}).")
             except Exception as e:
                 logger.exception("save_re_session")
-                self.ghidra_task_failed.emit(str(e))
-                self.status_message.emit("Save RE session failed.")
+                msg = str(e).strip() or e.__class__.__name__
+                self.ghidra_task_failed.emit(msg)
+                self.status_message.emit(f"Save RE session failed: {msg[:240]}")
 
         threading.Thread(target=work, name="rawview-save-re", daemon=True).start()
 
@@ -755,9 +775,9 @@ class RawViewQtController(QObject):
                 meta = self._api.get_re_session_meta()
                 if not meta.get("projectName"):
                     return
-                project_parent = Path(meta["projectsParent"])
-                project_name = meta["projectName"]
-                folder = project_parent / project_name
+                project_parent = Path(meta["projectsParent"]).expanduser()
+                project_name = str(meta["projectName"]).strip()
+                folder = (project_parent / project_name).resolve(strict=False)
                 ui = self.collect_re_session_ui_hints()
                 manifest = build_session_manifest(java_meta=meta, ui=ui)
                 zip_ghidra_project_folder(

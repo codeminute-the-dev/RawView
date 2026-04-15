@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import random
 import shutil
@@ -12,6 +14,8 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SESSION_JSON = "rawview_re_session.json"
 SCHEMA_VERSION = 1
@@ -88,6 +92,29 @@ def build_session_manifest(
     }
 
 
+def _atomic_replace_with_retries(src: Path, dst: Path, *, attempts: int = 12, base_delay_s: float = 0.08) -> None:
+    """``os.replace`` with retries for Windows antivirus / sync / file-in-use races."""
+    last: OSError | None = None
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as e:
+            last = e
+            winerr = getattr(e, "winerror", None)
+            transient = e.errno in (
+                errno.EACCES,
+                errno.EPERM,
+                errno.EBUSY,
+                errno.EAGAIN,
+            ) or winerr in (32, 33, 5)  # SHARING_VIOLATION, LOCK_VIOLATION, ACCESS_DENIED
+            if not transient or i == attempts - 1:
+                raise
+            time.sleep(base_delay_s * (i + 1))
+    assert last is not None
+    raise last
+
+
 def zip_ghidra_project_folder(
     *,
     project_folder: Path,
@@ -95,6 +122,8 @@ def zip_ghidra_project_folder(
     dest_zip: Path,
 ) -> None:
     """Write a .rvre.zip with manifest at root and one directory (project name) with all project files."""
+    project_folder = project_folder.expanduser().resolve()
+    dest_zip = dest_zip.expanduser().resolve()
     if not project_folder.is_dir():
         raise FileNotFoundError(f"Ghidra project folder not found: {project_folder}")
     root_name = manifest.get("projectName") or project_folder.name
@@ -102,16 +131,43 @@ def zip_ghidra_project_folder(
     part = dest_zip.with_suffix(dest_zip.suffix + ".part")
     if part.is_file():
         part.unlink()
+    committed = False
     try:
         with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(SESSION_JSON, json.dumps(manifest, indent=2))
+            added = 0
+            skipped: list[str] = []
             for f in project_folder.rglob("*"):
-                if f.is_file():
+                if not f.is_file():
+                    continue
+                try:
                     arc = f"{root_name}/{f.relative_to(project_folder).as_posix()}"
                     zf.write(f, arcname=arc)
-        os.replace(part, dest_zip)
+                    added += 1
+                except OSError as e:
+                    skipped.append(f"{f} ({e})")
+                    logger.warning("RE session zip: skipped unreadable file: %s (%s)", f, e)
+            if added == 0:
+                hint = "; ".join(skipped[:8]) if skipped else "no entries (empty project folder?)"
+                raise RuntimeError(
+                    "No project files could be read into the archive (files may be locked by Ghidra or another "
+                    "process). Try Save again after auto-analysis finishes, or restart RawView if the problem "
+                    f"persists. Detail: {hint}"
+                )
+            if skipped:
+                logger.warning(
+                    "RE session zip: %d file(s) skipped (partial archive). First few: %s",
+                    len(skipped),
+                    "; ".join(skipped[:5]),
+                )
+        _atomic_replace_with_retries(part, dest_zip)
+        committed = True
     finally:
-        part.unlink(missing_ok=True)
+        if not committed and part.exists():
+            try:
+                part.unlink()
+            except OSError:
+                pass
 
 
 def read_manifest_from_zip(zip_path: Path) -> dict[str, Any]:

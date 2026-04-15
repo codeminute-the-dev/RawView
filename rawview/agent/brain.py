@@ -8,6 +8,12 @@ from typing import Any
 
 import anthropic
 
+from rawview.agent.anthropic_backoff import (
+    AnthropicBackoffInterrupted,
+    messages_create_with_backoff,
+    messages_stream_with_backoff,
+)
+from rawview.agent.claude_model_limits import max_output_tokens_for_claude_model
 from rawview.agent.memory import ConversationMemory
 from rawview.agent.tools import anthropic_tool_list, run_tool
 from rawview.ghidra.api import GhidraAPI
@@ -96,6 +102,121 @@ class AgentBrain:
         self._temperature = float(temperature)
         self._interrupt = threading.Event()
 
+    def _messages_turn_stream(self, params: dict[str, Any]) -> Any:
+        stream_cm = messages_stream_with_backoff(
+            self._client, self._emit, params, should_abort=lambda: self._interrupt.is_set()
+        )
+        acc: list[str] = []
+        stream_began = False
+        msg: Any = None
+        use_thinking_stream = bool(params.get("thinking"))
+        try:
+            with stream_cm as stream:
+                self._emit("assistant_stream_begin", {})
+                stream_began = True
+                if use_thinking_stream:
+                    # ``text_stream`` omits thinking deltas; iterate the full stream so the UI can show reasoning.
+                    for chunk in stream:
+                        if self._interrupt.is_set():
+                            break
+                        ct = getattr(chunk, "type", None)
+                        if ct == "text":
+                            piece = getattr(chunk, "text", "") or ""
+                            if piece:
+                                acc.append(piece)
+                                self._emit("assistant_text_delta", {"text": piece})
+                        elif ct == "thinking":
+                            snap = getattr(chunk, "snapshot", None)
+                            piece = (
+                                snap
+                                if isinstance(snap, str) and snap
+                                else (getattr(chunk, "thinking", "") or "")
+                            )
+                            if piece:
+                                self._emit("assistant_thinking_live", {"text": str(piece)})
+                else:
+                    text_stream = getattr(stream, "text_stream", None)
+                    if text_stream is None:
+                        raise AttributeError("MessageStream has no text_stream")
+                    for text in text_stream:
+                        if self._interrupt.is_set():
+                            break
+                        acc.append(text)
+                        self._emit("assistant_text_delta", {"text": text})
+                try:
+                    msg = stream.get_final_message()
+                except Exception as ge:
+                    logger.warning("get_final_message after stream: %s", ge)
+                    if self._interrupt.is_set():
+                        return None
+                    raise
+        finally:
+            if stream_began:
+                self._emit("assistant_stream_end", {})
+        if self._interrupt.is_set():
+            return None
+        all_txt_parts: list[str] = []
+        if msg is not None:
+            for block in msg.content:
+                if getattr(block, "type", None) == "text":
+                    all_txt_parts.append(getattr(block, "text", "") or "")
+        merged = "".join(acc) if acc else "".join(all_txt_parts)
+        if not merged.strip():
+            merged = "".join(all_txt_parts)
+        # With extended thinking, put reasoning in the scrollback before the assistant reply.
+        if msg is not None and use_thinking_stream:
+            for block in msg.content:
+                bt = getattr(block, "type", None)
+                if bt == "thinking":
+                    t = getattr(block, "thinking", "") or ""
+                    if t.strip():
+                        self._emit("assistant_thinking", {"text": t})
+                elif bt == "redacted_thinking":
+                    self._emit("assistant_thinking", {"text": "[redacted thinking block]"})
+        if merged.strip():
+            self._emit("assistant_stream_commit", {"text": merged})
+        return msg
+
+    def _messages_turn(self, params: dict[str, Any]) -> tuple[Any, bool]:
+        """Return (message, streamed_text). Falls back to non-streaming on recoverable stream errors.
+
+        Anthropic requires the streaming API when extended thinking is enabled (non-streaming
+        ``messages.create`` rejects those requests). Do not fall back to create while
+        ``thinking`` is present.
+        """
+        thinking_on = params.get("thinking") is not None
+        if hasattr(self._client.messages, "stream"):
+            try:
+                return self._messages_turn_stream(params), True
+            except TypeError:
+                raise
+            except Exception as e:
+                if thinking_on:
+                    logger.warning(
+                        "Streaming failed while extended thinking was enabled (%s); "
+                        "will not fall back to non-streaming create (API forbids it with thinking).",
+                        e,
+                    )
+                    raise
+                logger.warning("Streaming request failed (%s); using non-streaming fallback", e)
+        elif thinking_on:
+            raise RuntimeError(
+                "Extended thinking requires client.messages.stream(); "
+                "this Anthropic SDK has no streaming Messages API."
+            )
+        msg = messages_create_with_backoff(
+            self._client, self._emit, params, should_abort=lambda: self._interrupt.is_set()
+        )
+        return msg, False
+
+    def _invoke_messages_turn(self, params: dict[str, Any]) -> tuple[Any, bool] | None:
+        """Like ``_messages_turn`` but returns ``None`` if the user stopped during Anthropic backoff waits."""
+        try:
+            return self._messages_turn(params)
+        except AnthropicBackoffInterrupted:
+            self._emit("agent_stopped", {"reason": "interrupt"})
+            return None
+
     def interrupt(self) -> None:
         self._interrupt.set()
 
@@ -103,7 +224,6 @@ class AgentBrain:
         self._interrupt.clear()
 
     def run_user_prompt(self, text: str, *, goal: str | None = None) -> None:
-        self.clear_interrupt()
         text = _expand_short_analyze_intent(text)
         self._memory.add_user(text)
         system = """
@@ -157,6 +277,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 - Decompile: `name` = `decompile_function`, `input` = {\"address\": \"004012a0\"}.
 - Disassembly with limit: `name` = `get_disassembly`, `input` = {\"address\": \"004012a0\", \"length\": 48}.
 - You may combine independent calls in **one** assistant message (e.g. `get_imports` + `get_entry_points`, each its own `tool_use` block).
+- When you want **one** `tool_use` block that still runs several tools, use **`batch_run_tools`**: `input` = `{\"calls\": [{\"name\": \"…\", \"input\": {…}}, …]}` (max 24 calls, no nested `batch_run_tools`). The host returns one JSON object with per-call results.
 
 ### Frequent mistakes (avoid these)
 - Answering the user with a long analysis **without** having issued the `tool_use` that would have produced the underlying facts.
@@ -196,6 +317,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 - **`append_work_markdown`**: Append to a Work-dock note. `input`: `markdown` (string, required); optional `tab_title` (string).
 - **`read_agent_memory`**: Read persistent agent memory file. `input`: optional `max_chars` (integer) only; `{}` is valid.
 - **`append_agent_memory`**: Append durable session facts to persistent memory. `input`: `markdown` (string, required).
+- **`web_search`**: Read-only web lookup (DuckDuckGo instant-answer style). `input`: `query` (string, required); optional `max_results` (integer 1–12); optional `fetch_primary_excerpt` (boolean, slower). Use for docs/CVEs/vendor context; verify against primary sources.
+- **`batch_run_tools`**: Run multiple tools in one host step. `input`: `calls` (array of `{name, input}`). Max 24; do not nest another `batch_run_tools`.
 - **`user_tip`**: Short UI tip for the user. `input`: `message` (string, required); use sparingly.
 
 ### Policy reminders
@@ -227,20 +350,42 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                 "temperature": self._temperature,
             }
             msg = None
+            streamed_turn = False
             try:
                 if self._extended_thinking:
                     budget = int(self._thinking_budget_tokens)
+                    desired_max = max(8192, budget + 2048)
+                    api_max = max_output_tokens_for_claude_model(self._model)
+                    max_out = min(desired_max, api_max)
+                    if max_out < desired_max:
+                        logger.info(
+                            "Extended thinking: clamped max_tokens to %s for model %s (API max %s; implied %s)",
+                            max_out,
+                            self._model,
+                            api_max,
+                            desired_max,
+                        )
+                    budget = min(budget, max(1024, max_out - 2048))
                     base_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                    base_kwargs["max_tokens"] = max(8192, budget + 2048)
+                    base_kwargs["max_tokens"] = max_out
+                    # Anthropic: temperature must be exactly 1 when extended thinking is enabled.
+                    base_kwargs["temperature"] = 1.0
                 else:
                     base_kwargs["max_tokens"] = 8192
-                msg = self._client.messages.create(**base_kwargs)
+                pair = self._invoke_messages_turn(base_kwargs)
+                if pair is None:
+                    return
+                msg, streamed_turn = pair
             except TypeError:
-                logger.warning("messages.create rejected thinking kwargs; retrying without thinking")
+                logger.warning("messages API rejected thinking kwargs; retrying without thinking")
                 base_kwargs.pop("thinking", None)
                 base_kwargs["max_tokens"] = 8192
+                base_kwargs["temperature"] = self._temperature
                 try:
-                    msg = self._client.messages.create(**base_kwargs)
+                    pair = self._invoke_messages_turn(base_kwargs)
+                    if pair is None:
+                        return
+                    msg, streamed_turn = pair
                 except Exception as e:
                     logger.exception("Anthropic request failed")
                     self._emit("agent_error", {"message": str(e)})
@@ -250,8 +395,12 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                     logger.warning("Extended thinking failed (%s); retrying without it", e)
                     base_retry = {k: v for k, v in base_kwargs.items() if k != "thinking"}
                     base_retry["max_tokens"] = 8192
+                    base_retry["temperature"] = self._temperature
                     try:
-                        msg = self._client.messages.create(**base_retry)
+                        pair = self._invoke_messages_turn(base_retry)
+                        if pair is None:
+                            return
+                        msg, streamed_turn = pair
                     except Exception as e2:
                         logger.exception("Anthropic request failed")
                         self._emit("agent_error", {"message": str(e2)})
@@ -261,6 +410,16 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                     self._emit("agent_error", {"message": str(e)})
                     return
 
+            if msg is None:
+                if self._interrupt.is_set():
+                    self._emit("agent_stopped", {"reason": "interrupt"})
+                else:
+                    self._emit(
+                        "agent_error",
+                        {"message": "Incomplete response from Anthropic (stream ended without a message)."},
+                    )
+                return
+
             assert msg is not None
             blocks_out: list[dict[str, Any]] = []
             tool_result_blocks: list[dict[str, Any]] = []
@@ -269,17 +428,20 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                 btype = getattr(block, "type", None)
                 if btype == "text":
                     t = getattr(block, "text", "")
-                    self._emit("assistant_text", {"text": t})
+                    if not streamed_turn:
+                        self._emit("assistant_text", {"text": t})
                     bd = _block_to_api_dict(block)
                     if bd:
                         blocks_out.append(bd)
                 elif btype == "thinking":
                     t = getattr(block, "thinking", "") or ""
-                    self._emit("assistant_thinking", {"text": t})
+                    if not streamed_turn:
+                        self._emit("assistant_thinking", {"text": t})
                     # Do not persist thinking in rolling memory: saves tokens and avoids replay constraints;
-                    # the UI stream still shows it.
+                    # streamed turns emit thinking in ``_messages_turn_stream`` before ``assistant_stream_commit``.
                 elif btype == "redacted_thinking":
-                    self._emit("assistant_thinking", {"text": "[redacted thinking block]"})
+                    if not streamed_turn:
+                        self._emit("assistant_thinking", {"text": "[redacted thinking block]"})
                 elif btype == "tool_use":
                     tid = getattr(block, "id", "")
                     name = getattr(block, "name", "")
@@ -294,7 +456,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                         except Exception as e:
                             logger.exception("Tool %s failed", name)
                             result = json.dumps({"error": str(e)})
-                    preview = result if len(result) < 4000 else result[:4000] + "..."
+                    cap = 14_000 if name in ("web_search", "batch_run_tools") else 4000
+                    preview = result if len(result) < cap else result[:cap] + "..."
                     self._emit("tool_result", {"id": tid, "name": name, "preview": preview})
                     blocks_out.append({"type": "tool_use", "id": tid, "name": name, "input": inp})
                     tool_result_blocks.append(

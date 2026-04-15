@@ -3,9 +3,21 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import logging
+from typing import Any, Callable
 
 import anthropic
+
+from rawview.agent.anthropic_backoff import (
+    AnthropicBackoffInterrupted,
+    messages_create_with_backoff,
+    messages_stream_with_backoff,
+)
+
+logger = logging.getLogger(__name__)
+
+NoticeEmit = Callable[[str, dict[str, Any]], None] | None
+ShouldAbort = Callable[[], bool] | None
 
 _SUMMARY_SYSTEM = """You compress reverse-engineering chat transcripts for the RawView Ghidra agent.
 
@@ -84,28 +96,69 @@ def _flatten_content(content: Any) -> str:
     return str(content)[:50_000]
 
 
+def _text_from_message(msg: Any) -> str:
+    out: list[str] = []
+    for block in msg.content:
+        if getattr(block, "type", None) == "text":
+            out.append(getattr(block, "text", "") or "")
+    return "\n".join(out).strip()
+
+
 def summarize_conversation_transcript(
     *,
     api_key: str,
     model: str,
     transcript: str,
     temperature: float = 0.2,
+    emit: NoticeEmit = None,
+    should_abort: ShouldAbort = None,
 ) -> str:
     if not transcript.strip():
         raise ValueError("empty_transcript")
     client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=model,
-        max_tokens=8192,
-        temperature=float(temperature),
-        system=_SUMMARY_SYSTEM,
-        messages=[{"role": "user", "content": transcript}],
-    )
-    out: list[str] = []
-    for block in msg.content:
-        if getattr(block, "type", None) == "text":
-            out.append(getattr(block, "text", ""))
-    text = "\n".join(out).strip()
+    params: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 8192,
+        "temperature": float(temperature),
+        "system": _SUMMARY_SYSTEM,
+        "messages": [{"role": "user", "content": transcript}],
+    }
+
+    if hasattr(client.messages, "stream"):
+        try:
+            stream_began = False
+            with messages_stream_with_backoff(client, emit, params, should_abort=should_abort) as stream:
+                if emit is not None:
+                    emit("assistant_stream_begin", {"source": "summarize"})
+                stream_began = True
+                try:
+                    text_stream = getattr(stream, "text_stream", None)
+                    if text_stream is None:
+                        raise AttributeError("no text_stream")
+                    for text in text_stream:
+                        if should_abort is not None and should_abort():
+                            raise AnthropicBackoffInterrupted()
+                        if emit is not None:
+                            emit("assistant_text_delta", {"text": text, "source": "summarize"})
+                    msg = stream.get_final_message()
+                finally:
+                    if emit is not None and stream_began:
+                        emit("assistant_stream_end", {"source": "summarize"})
+            text = _text_from_message(msg)
+            if not text:
+                raise RuntimeError("summarizer_returned_no_text")
+            if emit is not None:
+                emit("assistant_stream_commit", {"text": text, "source": "summarize"})
+            return text
+        except AnthropicBackoffInterrupted:
+            raise
+        except Exception as e:
+            logger.warning("/summarize streaming failed (%s); falling back to non-streaming", e)
+
+    msg = messages_create_with_backoff(client, emit, params, should_abort=should_abort)
+    text = _text_from_message(msg)
     if not text:
         raise RuntimeError("summarizer_returned_no_text")
+    if emit is not None:
+        emit("assistant_stream_commit", {"text": text, "source": "summarize"})
     return text

@@ -92,10 +92,15 @@ class SettingsDialog(QDialog):
         self._agent_temp.setToolTip(
             "Anthropic Messages API: optional sampling temperature (default in API docs: 1.0). "
             "Lower ≈ more analytical / steadier tool arguments; higher ≈ more varied prose. "
+            "When extended thinking is enabled, the API requires temperature 1.0 — RawView sends 1.0 for those "
+            "requests and uses this value only when thinking is off. "
             "Do not set top_p elsewhere - use temperature only."
         )
         self._think = QCheckBox("Agent extended thinking (models that support it only)")
-        self._think.setToolTip("If the model rejects this option, RawView retries without extended thinking.")
+        self._think.setToolTip(
+            "Anthropic requires streaming and temperature=1.0 while thinking is on; RawView applies both. "
+            "If the model rejects this option, RawView retries without extended thinking."
+        )
         self._think_budget = QSpinBox()
         self._think_budget.setRange(1024, 100_000)
         self._think_budget.setSingleStep(1024)

@@ -40,11 +40,16 @@ C) Inno Setup .exe (optional alternative)
   After build-windows.ps1, open installer\RawView.iss in Inno Setup 6.
   Output: dist_installer\RawView-Setup-0.1.0.exe
 
+  Same AppId across releases: users with an older build can run a newer
+  RawView-Setup-*.exe to update in place (files overwritten in the existing
+  install folder). New machines get the usual first-run install wizard.
+
 
 Notes
 -----
   - The MSI shows LICENSE in the wizard. Add/Remove Programs uses the same
     app icon as RawView (packaging\wix\app_icon.ico, synced from branding).
   - Ghidra/JDK/API keys are configured inside the app, not in the MSI.
-  - Bump Product Version in packaging\wix\Product.wxs (and MSI filename in
-    scripts\build-msi.ps1) when you ship a new release.
+  - Bump version in pyproject.toml when you ship a new release; build-msi.ps1
+    passes it to WiX (Product Version + RawView-x.y.z.msi). UpgradeCode in
+    Product.wxs must stay fixed so newer MSIs replace older installs in place.

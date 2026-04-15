@@ -10,6 +10,35 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+function Get-PyProjectSemVer([string]$PyProjectPath) {
+    $line = Get-Content -LiteralPath $PyProjectPath -ErrorAction Stop |
+        Where-Object { $_ -match '^\s*version\s*=\s*"' } | Select-Object -First 1
+    if (-not $line) { throw "Could not find version = in pyproject.toml" }
+    if ($line -match 'version\s*=\s*"([^"]+)"') { return $Matches[1].Trim() }
+    throw "Could not parse version from line: $line"
+}
+
+function Expand-WixProductVersion([string]$SemVer) {
+    $core = (($SemVer -replace '^v', '') -split '\+')[0]
+    $core = ($core -split '-')[0]
+    $parts = $core -split '\.'
+    $nums = @()
+    foreach ($p in $parts) {
+        if ($p -match '^\d+$') { $nums += [int]$p }
+        else { break }
+    }
+    if ($nums.Count -lt 1) { throw "No numeric version segments in: $SemVer" }
+    while ($nums.Count -lt 4) { $nums += 0 }
+    if ($nums.Count -gt 4) { $nums = $nums[0..3] }
+    return ($nums -join '.')
+}
+
+$pyprojectPath = Join-Path $Root "pyproject.toml"
+$semver = Get-PyProjectSemVer $pyprojectPath
+$wixProductVersion = Expand-WixProductVersion $semver
+$msiVerLabel = (($wixProductVersion -split '\.')[0..2] -join '.')
+
 $packagingWix = Join-Path $Root "packaging\wix"
 $DistApp = Join-Path $Root "dist\RawView"
 $OutDir = Join-Path $Root "dist_installer"
@@ -63,6 +92,7 @@ function Find-WixBin {
 
 Write-Host "== RawView MSI build ==" -ForegroundColor Cyan
 Write-Host "Root: $Root"
+Write-Host "Product version (WiX / MSI): $wixProductVersion (from pyproject.toml: $semver)" -ForegroundColor DarkGray
 
 if (-not $SkipPyInstaller) {
     & (Join-Path $Root "scripts\build-windows.ps1")
@@ -159,18 +189,21 @@ try {
     Write-Host "Candle ..." -ForegroundColor Cyan
     & $candle -nologo -arch x64 `
         "-dSourceDir=$sourceDirFull" `
+        "-dProductVersion=$wixProductVersion" `
+        -ext WixUtilExtension `
         -out ($ObjDir + "\") `
         $productWxs `
         $HarvestWxs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    $msiName = "RawView-0.1.0.msi"
+    $msiName = "RawView-$msiVerLabel.msi"
     $msiPath = Join-Path $OutDir $msiName
     Write-Host "Light -> $msiPath" -ForegroundColor Cyan
     # ICE38: per-user profile installs normally need HKCU registry KeyPaths; Heat emits file KeyPaths.
     # ICE91: per-user dirs vs ALLUSERS (expected for this layout).
     & $light -nologo `
         -ext WixUIExtension `
+        -ext WixUtilExtension `
         -cultures:en-us `
         -sice:ICE38 `
         -sice:ICE64 `

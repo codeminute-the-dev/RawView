@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rawview.agent.long_term_memory import append_agent_memory_text, agent_memory_path, read_agent_memory_text
+from rawview.agent.web_search import perform_web_search
 from rawview.ghidra.api import GhidraAPI
 from rawview.qt_ui.work_dock import work_notes_dir
 
@@ -211,6 +212,41 @@ def _build_registry(
             return json.dumps({"error": "empty_markdown"})
         path = append_agent_memory_text(md)
         return json.dumps({"ok": True, "path": str(path.resolve())})
+
+    def web_search(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
+        q = str(inp.get("query", ""))
+        max_r = int(inp.get("max_results", 6) or 6)
+        fetch_ex = bool(inp.get("fetch_primary_excerpt", False))
+        out = perform_web_search(q, max_results=max_r, fetch_primary_excerpt=fetch_ex)
+        return json.dumps(out, ensure_ascii=False)
+
+    def batch_run_tools(inp: dict[str, Any], api: GhidraAPI, nav: Callable[[str], None]) -> str:
+        calls = inp.get("calls")
+        if not isinstance(calls, list) or not calls:
+            return json.dumps({"error": "calls_must_be_non_empty_array"})
+        if len(calls) > 24:
+            return json.dumps({"error": "max_24_calls_per_batch", "got": len(calls)})
+        results: list[dict[str, Any]] = []
+        for i, c in enumerate(calls):
+            if not isinstance(c, dict):
+                results.append({"index": i, "error": "each_call_must_be_object"})
+                continue
+            n = str(c.get("name", "")).strip()
+            sub = c.get("input")
+            if not isinstance(sub, dict):
+                sub = {}
+            if n == "batch_run_tools":
+                results.append({"index": i, "error": "nested_batch_run_tools_not_allowed"})
+                continue
+            if not n:
+                results.append({"index": i, "error": "missing_tool_name"})
+                continue
+            try:
+                out = run_tool(n, sub, api, nav, emit_fn)
+                results.append({"index": i, "name": n, "result": out})
+            except Exception as e:
+                results.append({"index": i, "name": n, "error": str(e)})
+        return json.dumps({"ok": True, "count": len(calls), "results": results}, ensure_ascii=False)
 
     tools: list[RegisteredTool] = [
         RegisteredTool(
@@ -609,6 +645,56 @@ def _build_registry(
                 "required": ["markdown"],
             },
             handler=append_agent_memory,
+        ),
+        RegisteredTool(
+            name="web_search",
+            description=(
+                "Search the public web for documentation, CVEs, vendor advisories, or general facts. "
+                "Uses DuckDuckGo instant answers and related links (no API key). "
+                "Verify critical claims against primary sources."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max result rows to return (1–12). Default 6.",
+                    },
+                    "fetch_primary_excerpt": {
+                        "type": "boolean",
+                        "description": "If true, fetch the primary result page and include a short text excerpt (slower).",
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=web_search,
+        ),
+        RegisteredTool(
+            name="batch_run_tools",
+            description=(
+                "Run multiple tools in one assistant turn to save tokens. Provide an array of {name, input} calls. "
+                "Each call is independent (same rules as single tools). Max 24 calls; do not nest batch_run_tools."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "calls": {
+                        "type": "array",
+                        "description": "Ordered list of tool invocations.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "input": {"type": "object"},
+                            },
+                            "required": ["name", "input"],
+                        },
+                    }
+                },
+                "required": ["calls"],
+            },
+            handler=batch_run_tools,
         ),
         RegisteredTool(
             name="user_tip",

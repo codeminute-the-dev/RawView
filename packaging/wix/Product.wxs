@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <!-- Per-user MSI. File list comes from Heat (_Harvest.wxs). Bump Product Version for upgrades. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <!--
+    Per-user MSI. Heat (_Harvest.wxs) emits new component GUIDs each build; UpgradeCode
+    stays fixed. MajorUpgrade removes the prior product early so a newer MSI installs
+    cleanly (update in place). scripts/build-msi.ps1 passes -dProductVersion from
+    pyproject.toml — bump the release version there so upgrades are detected (WiX uses
+    the first three version fields for comparison; the fourth is ignored by Windows Installer).
+  -->
   <Product
       Id="*"
       Name="RawView"
       Language="1033"
-      Version="0.1.0.0"
+      Version="$(var.ProductVersion)"
       Manufacturer="RawView"
       UpgradeCode="B2C5D8E1-F4A7-4B9C-8D0E-1F2A3B4C5D6E">
     <Package
@@ -15,9 +22,20 @@
         InstallPrivileges="limited"
         Platform="x64"
         Description="RawView - Qt + Ghidra reverse engineering UI" />
+    <!-- Remove existing install before laying down files (pairs well with Heat -gg). -->
     <MajorUpgrade
         AllowSameVersionUpgrades="yes"
-        DowngradeErrorMessage="A newer version of RawView is already installed." />
+        DowngradeErrorMessage="A newer version of RawView is already installed."
+        Schedule="afterInstallInitialize" />
+    <!-- Let users update while RawView is running: close before files are replaced. -->
+    <util:CloseApplication
+        Id="CloseRawView"
+        Target="RawView.exe"
+        CloseMessage="yes"
+        Description="RawView needs to close so Setup can update or replace files. Save your work, then click Retry, or close the app and run Setup again."
+        RebootPrompt="no"
+        TerminateProcess="1"
+        Timeout="120" />
     <MediaTemplate EmbedCab="yes" />
 
     <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />

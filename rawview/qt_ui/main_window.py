@@ -5,17 +5,33 @@ from __future__ import annotations
 import html
 import json
 import math
+import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QEvent, QEventLoop, QObject, QSettings, QTimer, Qt
-from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCursor
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QEventLoop,
+    QObject,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSettings,
+    QTimer,
+    Qt,
+    QUrl,
+    QUrlQuery,
+)
+from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCursor, QTextDocumentFragment
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -27,10 +43,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -71,6 +89,14 @@ class MainWindow(QMainWindow):
         self._shortcut_controller = ShortcutController(self, self._ui_settings)
         self._spotlight_overlay: QWidget | None = None
         self._agent_feed_html_chunks: list[str] = []
+        self._agent_tool_expand_html: dict[str, str] = {}
+        self._agent_stream_plain: str = ""
+        self._agent_gen_dots_phase: int = 0
+        self._agent_gen_dots_timer = QTimer(self)
+        self._agent_gen_dots_timer.setInterval(420)
+        self._agent_gen_dots_timer.timeout.connect(self._tick_agent_gen_dots)
+        self._agent_gen_opacity_anim: QPropertyAnimation | None = None
+        self._btn_send_pulse_anim: QPropertyAnimation | None = None
         self._program_loaded: bool = False
         self._psutil_mod: Any = None  # lazy: False = unavailable, else the psutil module
 
@@ -114,17 +140,39 @@ class MainWindow(QMainWindow):
     def _setup_agent_feed_html(self) -> None:
         doc = self._agent_feed.document()
         doc.setDefaultStyleSheet(
-            "body{font-family:Consolas,monospace;font-size:10pt;color:#c0caf5;}"
-            ".rvt{color:#7f849c;font-style:italic;}"
-            ".rva{color:#c0caf5;}"
-            ".rvtool{background:#1f2335;border-left:3px solid #7aa2f7;padding:6px;margin:6px 0;}"
-            ".rvpre{white-space:pre-wrap;font-family:Consolas,monospace;color:#a9b1d6;}"
-            ".rvmeta{color:#565f89;font-size:9pt;}"
+            "body{font-family:'Segoe UI',Consolas,sans-serif;font-size:10pt;color:#c8ccd8;background:#16161e;}"
+            ".rvt{color:#8b92a8;font-style:italic;}"
+            ".rva{color:#d8dbe6;line-height:1.45;}"
+            ".rvtool{background:#1e2130;border-left:3px solid #5b7aa8;border-radius:4px;padding:8px 10px;margin:8px 0;}"
+            ".rvtool-fold{border-left-color:#4a5570;}"
+            ".rvweb .rvweb-primary{margin-top:6px;word-break:break-all;}"
+            ".rvpre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:9.5pt;color:#b8bfd4;}"
+            ".rvmeta{color:#6b7080;font-size:9pt;}"
+            ".rvlink{color:#8eb8e5;text-decoration:none;}"
+            ".rvnotice{color:#c9b87a;font-size:9.5pt;padding:4px 0;}"
+            "a.rvlink:hover{text-decoration:underline;}"
+            "code{font-family:Consolas,monospace;background:#252836;padding:1px 4px;border-radius:3px;font-size:9.5pt;}"
+            "pre{background:#252836;border-radius:4px;padding:6px;}"
         )
 
     def _clear_agent_feed(self) -> None:
+        self._agent_gen_dots_timer.stop()
+        if self._agent_gen_opacity_anim is not None:
+            self._agent_gen_opacity_anim.stop()
+        if self._btn_send_pulse_anim is not None:
+            self._btn_send_pulse_anim.stop()
+        eff_send = self._btn_send.graphicsEffect()
+        if isinstance(eff_send, QGraphicsOpacityEffect):
+            eff_send.setOpacity(1.0)
+        self._agent_activity.setVisible(False)
+        self._agent_gen_label.clear()
+        self._agent_live_thinking.clear()
+        self._agent_live_thinking.setVisible(False)
+        self._agent_live_stream.clear()
+        self._agent_stream_plain = ""
         self._agent_feed.clear()
         self._agent_feed_html_chunks.clear()
+        self._agent_tool_expand_html.clear()
         self._setup_agent_feed_html()
 
     def _append_agent_html(self, fragment: str) -> None:
@@ -136,12 +184,118 @@ class MainWindow(QMainWindow):
         self._append_agent_html(fragment)
         self._agent_feed_html_chunks.append(fragment)
 
-    def _replay_feed_html_chunks(self, chunks: list[str]) -> None:
+    def _replay_feed_html_chunks(self, chunks: list[str], *, preserve_scroll: bool = False) -> None:
+        bar = self._agent_feed.verticalScrollBar()
+        prev = bar.value() if preserve_scroll else None
         self._agent_feed.clear()
         self._setup_agent_feed_html()
         self._agent_feed_html_chunks = list(chunks)
         for fragment in chunks:
             self._append_agent_html(fragment)
+        if preserve_scroll and prev is not None:
+            bar.setValue(min(prev, bar.maximum()))
+
+    def _materialize_collapsed_tool_chunks(self, chunks: list[str]) -> list[str]:
+        """Replace fold links with full tool HTML so saved archives stay readable offline."""
+        out: list[str] = []
+        pat = re.compile(r"rvexpand:\?uid=([0-9a-f]{8,64})")
+        for ch in chunks:
+            m = pat.search(ch)
+            if m:
+                uid = m.group(1)
+                full = self._agent_tool_expand_html.get(uid)
+                if full is not None:
+                    out.append(full)
+                    continue
+            out.append(ch)
+        return out
+
+    def _assistant_body_from_markdown(self, text: str) -> str:
+        try:
+            frag = QTextDocumentFragment.fromMarkdown(text)
+            return frag.toHtml()
+        except (AttributeError, TypeError):
+            esc = html.escape
+            return esc(text).replace("\n", "<br/>")
+
+    def _on_agent_feed_anchor(self, url: QUrl) -> None:
+        if url.scheme() != "rvexpand":
+            return
+        uid = QUrlQuery(url.query()).queryItemValue("uid")
+        if not uid:
+            return
+        expanded = self._agent_tool_expand_html.get(uid)
+        if expanded is None:
+            return
+        needle = f"rvexpand:?uid={uid}"
+        replaced = False
+        new_chunks: list[str] = []
+        for ch in self._agent_feed_html_chunks:
+            if not replaced and needle in ch:
+                new_chunks.append(expanded)
+                replaced = True
+            else:
+                new_chunks.append(ch)
+        if replaced:
+            self._agent_tool_expand_html.pop(uid, None)
+            self._replay_feed_html_chunks(new_chunks, preserve_scroll=True)
+
+    def _wire_agent_activity_animation(self) -> None:
+        eff = QGraphicsOpacityEffect(self._agent_activity)
+        self._agent_activity.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(1400)
+        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        anim.setLoopCount(-1)
+        anim.setStartValue(0.72)
+        anim.setEndValue(1.0)
+        self._agent_gen_opacity_anim = anim
+
+    def _wire_agent_send_button_pulse(self) -> None:
+        eff = QGraphicsOpacityEffect(self._btn_send)
+        self._btn_send.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(1100)
+        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        anim.setLoopCount(-1)
+        anim.setStartValue(0.82)
+        anim.setEndValue(1.0)
+        self._btn_send_pulse_anim = anim
+
+    def _set_agent_generating(self, active: bool) -> None:
+        if active:
+            self._agent_activity.setVisible(True)
+            self._agent_gen_dots_phase = 0
+            self._tick_agent_gen_dots()
+            self._agent_gen_dots_timer.start()
+            if self._agent_gen_opacity_anim is not None:
+                self._agent_gen_opacity_anim.start()
+            if self._btn_send_pulse_anim is not None:
+                self._btn_send_pulse_anim.start()
+        else:
+            self._agent_gen_dots_timer.stop()
+            if self._agent_gen_opacity_anim is not None:
+                self._agent_gen_opacity_anim.stop()
+            if self._btn_send_pulse_anim is not None:
+                self._btn_send_pulse_anim.stop()
+            eff_btn = self._btn_send.graphicsEffect()
+            if isinstance(eff_btn, QGraphicsOpacityEffect):
+                eff_btn.setOpacity(1.0)
+            self._agent_gen_label.clear()
+            if (
+                not self._agent_stream_plain
+                and self._agent_live_stream.text().strip() == ""
+                and self._agent_live_thinking.text().strip() == ""
+            ):
+                self._agent_activity.setVisible(False)
+            eff = self._agent_activity.graphicsEffect()
+            if isinstance(eff, QGraphicsOpacityEffect):
+                eff.setOpacity(1.0)
+
+    def _tick_agent_gen_dots(self) -> None:
+        self._agent_gen_dots_phase = (self._agent_gen_dots_phase + 1) % 4
+        dots = "." * self._agent_gen_dots_phase
+        self._agent_gen_label.setText(f"Model is generating{dots}")
 
     def _show_user_tip(self, message: str) -> None:
         self._tip_label.setText(message[:400])
@@ -288,17 +442,58 @@ class MainWindow(QMainWindow):
 
         # Agent dock (optional)
         agent = QWidget()
+        agent.setStyleSheet("background-color: #16161e;")
         al = QVBoxLayout(agent)
-        self._agent_feed = QTextEdit()
+        self._agent_activity = QFrame()
+        self._agent_activity.setObjectName("agent_activity")
+        self._agent_activity.setVisible(False)
+        act_outer = QVBoxLayout(self._agent_activity)
+        act_outer.setContentsMargins(8, 6, 8, 6)
+        self._agent_gen_label = QLabel("")
+        self._agent_gen_label.setStyleSheet("color: #aab6d6; font-size: 10pt;")
+        self._agent_live_thinking = QLabel("")
+        self._agent_live_thinking.setWordWrap(True)
+        self._agent_live_thinking.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._agent_live_thinking.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        self._agent_live_thinking.setMaximumHeight(140)
+        self._agent_live_thinking.setVisible(False)
+        self._agent_live_thinking.setStyleSheet(
+            "color: #9aa7b8; font-family: Consolas, monospace; font-size: 9pt; font-style: italic; "
+            "background: #171923; border-radius: 4px; padding: 6px; border: 1px solid #3d4358;"
+        )
+        self._agent_live_stream = QLabel("")
+        self._agent_live_stream.setWordWrap(True)
+        self._agent_live_stream.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._agent_live_stream.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        self._agent_live_stream.setMaximumHeight(160)
+        self._agent_live_stream.setStyleSheet(
+            "color: #d0d5e0; font-family: Consolas, monospace; font-size: 9.5pt; "
+            "background: #1b1d28; border-radius: 4px; padding: 6px;"
+        )
+        act_outer.addWidget(self._agent_gen_label)
+        act_outer.addWidget(self._agent_live_thinking)
+        act_outer.addWidget(self._agent_live_stream)
+        self._agent_activity.setStyleSheet(
+            "QFrame#agent_activity { background-color: #1f212d; border: 1px solid #3a3f55; border-radius: 8px; }"
+        )
+        al.addWidget(self._agent_activity)
+        self._agent_feed = QTextBrowser()
         self._agent_feed.setReadOnly(True)
-        self._agent_feed.setAcceptRichText(True)
-        self._agent_feed.setFont(self._mono())
+        self._agent_feed.setOpenLinks(False)
+        self._agent_feed.setOpenExternalLinks(False)
+        self._agent_feed.anchorClicked.connect(self._on_agent_feed_anchor)
         self._agent_feed.setPlaceholderText("Agent activity (tools, results) streams here when enabled.")
+        self._agent_feed.setStyleSheet(
+            "QTextBrowser { background-color: #16161e; color: #c8ccd8; border: 1px solid #2c2f3d; border-radius: 6px; }"
+        )
         self._agent_prompt = QTextEdit()
         self._agent_prompt.setPlaceholderText(
             "Ask the agent… Type /summarize to compress chat history when it grows. (ANTHROPIC_API_KEY required)"
         )
         self._agent_prompt.setMaximumHeight(100)
+        self._agent_prompt.setStyleSheet(
+            "QTextEdit { background-color: #1e2130; color: #d8dbe6; border: 1px solid #2c2f3d; border-radius: 6px; padding: 4px; }"
+        )
         row_head = QHBoxLayout()
         row_head.addWidget(QLabel("Agent (optional)"))
         self._btn_new_chat = QPushButton("New chat")
@@ -329,6 +524,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_agent)
         self._apply_agent_availability()
         self._setup_agent_feed_html()
+        self._wire_agent_activity_animation()
+        self._wire_agent_send_button_pulse()
 
         self._work_panel = WorkDockPanel()
         self._dock_work = QDockWidget("Work", self)
@@ -934,15 +1131,17 @@ class MainWindow(QMainWindow):
 
     def _send_agent(self) -> None:
         raw = self._agent_prompt.toPlainText()
+        if not raw.strip():
+            return
         low = raw.strip().lower()
         self._ctrl.send_agent_prompt(raw)
-        if low == "/summarize" or low.startswith("/summarize "):
-            self._agent_prompt.clear()
+        self._agent_prompt.clear()
 
     def _new_agent_chat(self) -> None:
         msgs = self._ctrl.agent_memory.export_messages()
         if self._ctrl.agent_memory.is_nonempty() or self._agent_feed_html_chunks:
-            self._ctrl.save_agent_chat_archive(msgs, self._agent_feed_html_chunks)
+            feed_save = self._materialize_collapsed_tool_chunks(self._agent_feed_html_chunks)
+            self._ctrl.save_agent_chat_archive(msgs, feed_save)
         self._ctrl.clear_agent_memory()
         self._clear_agent_feed()
         self._populate_saved_chats_combo()
@@ -985,6 +1184,57 @@ class MainWindow(QMainWindow):
         if kind == "user_tip":
             self._show_user_tip(str(data.get("message", "")))
             return
+        if kind == "agent_generating":
+            self._set_agent_generating(bool(data.get("active")))
+            return
+        if kind == "assistant_stream_begin":
+            self._agent_stream_plain = ""
+            self._agent_live_stream.clear()
+            self._agent_live_thinking.clear()
+            self._agent_live_thinking.setVisible(False)
+            return
+        if kind == "assistant_text_delta":
+            chunk = str(data.get("text", ""))
+            self._agent_stream_plain += chunk
+            display = self._agent_stream_plain
+            if len(display) > 14000:
+                display = "…\n" + display[-14000:]
+            self._agent_live_stream.setText(display)
+            self._agent_activity.setVisible(True)
+            return
+        if kind == "assistant_thinking_live":
+            raw = str(data.get("text", ""))
+            if not raw.strip():
+                return
+            display = raw
+            if len(display) > 12000:
+                display = "…\n" + display[-12000:]
+            self._agent_live_thinking.setText(display)
+            self._agent_live_thinking.setVisible(True)
+            self._agent_activity.setVisible(True)
+            return
+        if kind == "assistant_stream_end":
+            return
+        if kind == "assistant_stream_commit":
+            text = str(data.get("text", ""))
+            src = str(data.get("source", "agent"))
+            label = "/summarize (result)" if src == "summarize" else "assistant"
+            body = self._assistant_body_from_markdown(text)
+            self._append_feed_html(
+                f'<div class="rva"><span class="rvmeta">[{esc(ts)}] {esc(label)}</span><br/>{body}</div>'
+            )
+            self._agent_live_stream.clear()
+            self._agent_stream_plain = ""
+            self._agent_live_thinking.clear()
+            self._agent_live_thinking.setVisible(False)
+            return
+        if kind == "agent_notice":
+            note = esc(str(data.get("message", "")))
+            self._append_feed_html(
+                f'<div class="rvnotice"><span class="rvmeta">[{esc(ts)}] notice</span><br/>{note}</div>'
+            )
+            self.statusBar().showMessage(str(data.get("message", ""))[:500], 12_000)
+            return
         if kind == "conversation_summarized":
             n = int(data.get("api_messages_before", 0) or 0)
             tin = int(data.get("transcript_chars", 0) or 0)
@@ -1008,13 +1258,13 @@ class MainWindow(QMainWindow):
             return
 
         if kind == "assistant_thinking":
-            body = esc(str(data.get("text", ""))).replace("\n", "<br/>")
+            body = self._assistant_body_from_markdown(str(data.get("text", "")))
             self._append_feed_html(
                 f'<div class="rvt"><span class="rvmeta">[{esc(ts)}] thinking</span><br/>{body}</div>'
             )
             return
         if kind == "assistant_text":
-            body = esc(str(data.get("text", ""))).replace("\n", "<br/>")
+            body = self._assistant_body_from_markdown(str(data.get("text", "")))
             self._append_feed_html(
                 f'<div class="rva"><span class="rvmeta">[{esc(ts)}] assistant</span><br/>{body}</div>'
             )
@@ -1028,19 +1278,85 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 inp_s = str(inp)
             inp_h = esc(inp_s)
-            self._append_feed_html(
+            uid = uuid.uuid4().hex
+            expanded = (
                 f'<div class="rvtool"><span class="rvmeta">[{esc(ts)}] tool call</span> '
                 f'<b>{name}</b> <span class="rvmeta">id={tid}</span>'
                 f'<pre class="rvpre">{inp_h}</pre></div>'
             )
+            collapsed = (
+                f'<div class="rvtool rvtool-fold"><span class="rvmeta">[{esc(ts)}] tool call</span> '
+                f'<b>{name}</b> <span class="rvmeta">id={tid}</span> '
+                f'<a class="rvlink" href="rvexpand:?uid={uid}">Uncollapse</a></div>'
+            )
+            self._agent_tool_expand_html[uid] = expanded
+            self._append_feed_html(collapsed)
             return
         if kind == "tool_result":
-            name = esc(str(data.get("name", "")))
-            prev = esc(str(data.get("preview", "")))
-            self._append_feed_html(
+            raw_name = str(data.get("name", ""))
+            raw_prev = str(data.get("preview", ""))
+            name = esc(raw_name)
+            prev_esc = esc(raw_prev)
+            if raw_name == "web_search":
+                parsed: dict[str, Any] | None
+                try:
+                    j = json.loads(raw_prev)
+                    parsed = j if isinstance(j, dict) else None
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    uid = uuid.uuid4().hex
+                    pu = str(parsed.get("primary_url") or "").strip()
+                    pt = str(parsed.get("primary_title") or "").strip()
+                    psnip = str(parsed.get("primary_snippet") or "").strip()
+                    if not pu:
+                        res = parsed.get("results")
+                        if isinstance(res, list) and res and isinstance(res[0], dict):
+                            pu = str(res[0].get("url") or "").strip()
+                            pt = str(res[0].get("title") or pt).strip()
+                            psnip = str(res[0].get("snippet") or psnip).strip()
+                    if pu:
+                        p_esc = esc(pu)
+                        t_show = esc((pt or pu)[:200])
+                        primary_line = (
+                            f'<div class="rvweb-primary"><span class="rvmeta">Top result</span> '
+                            f'<a class="rvlink" href="{p_esc}">{p_esc}</a> '
+                            f'<span class="rvmeta">{t_show}</span></div>'
+                        )
+                    else:
+                        primary_line = '<div class="rvmeta">No linkable results.</div>'
+                    snip_show = ""
+                    if psnip:
+                        s_esc = esc(psnip[:240])
+                        snip_show = (
+                            f'<div class="rvmeta" style="margin:4px 0;">{s_esc}'
+                            f'{"…" if len(psnip) > 240 else ""}</div>'
+                        )
+                    collapsed = (
+                        f'<div class="rvtool rvtool-fold rvweb"><span class="rvmeta">[{esc(ts)}] tool result</span> '
+                        f'<b>web_search</b>{primary_line}{snip_show}'
+                        f'<a class="rvlink" href="rvexpand:?uid={uid}">Uncollapse full JSON</a></div>'
+                    )
+                    expanded = (
+                        f'<div class="rvtool rvweb"><span class="rvmeta">[{esc(ts)}] tool result</span> <b>web_search</b>'
+                        f'<pre class="rvpre">{prev_esc}</pre></div>'
+                    )
+                    self._agent_tool_expand_html[uid] = expanded
+                    self._append_feed_html(collapsed)
+                    return
+            short = prev_esc[:280] + ("…" if len(prev_esc) > 280 else "")
+            uid = uuid.uuid4().hex
+            expanded = (
                 f'<div class="rvtool"><span class="rvmeta">[{esc(ts)}] tool result</span> <b>{name}</b>'
-                f'<pre class="rvpre">{prev}</pre></div>'
+                f'<pre class="rvpre">{prev_esc}</pre></div>'
             )
+            collapsed = (
+                f'<div class="rvtool rvtool-fold"><span class="rvmeta">[{esc(ts)}] tool result</span> <b>{name}</b>'
+                f'<div class="rvmeta" style="margin:4px 0;">{short}</div>'
+                f'<a class="rvlink" href="rvexpand:?uid={uid}">Uncollapse full output</a></div>'
+            )
+            self._agent_tool_expand_html[uid] = expanded
+            self._append_feed_html(collapsed)
             return
         if kind in ("agent_done", "agent_stopped", "agent_error"):
             extra = esc(json.dumps(data, ensure_ascii=False)[:2000])

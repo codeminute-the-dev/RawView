@@ -49,6 +49,12 @@ public class GhidraBridge {
     private String currentProjectName;
     /** Absolute path of the binary last passed to {@link #openFile}; empty after {@link #openSavedProject}. */
     private String lastOpenedBinaryPath = "";
+    /**
+     * Set after a successful {@link #openFile} until the first {@link #flushProgramToDisk} finishes a
+     * {@link GhidraProject#saveAs}. {@code importProgram} can leave a program without a real project file
+     * on disk; {@link DomainFile#canSave()} may still be true, so we do not rely on it alone.
+     */
+    private boolean needsInitialProjectSaveAs;
 
     public GhidraBridge(String projectBaseDir) {
         this.projectBaseDir = projectBaseDir;
@@ -83,6 +89,7 @@ public class GhidraBridge {
         decompiler.openProgram(program);
         currentProjectName = projectName;
         lastOpenedBinaryPath = bin.getAbsolutePath();
+        needsInitialProjectSaveAs = true;
         return program.getName();
     }
 
@@ -131,16 +138,79 @@ public class GhidraBridge {
         decompiler.openProgram(program);
         currentProjectName = projectFolderName;
         lastOpenedBinaryPath = "";
+        needsInitialProjectSaveAs = false;
         return program.getName();
     }
 
     /** Checkpoint + save so the project folder on disk is safe to copy (RE session export). */
     public synchronized void flushProgramToDisk() throws Exception {
         ensureProgram();
-        if (ghidraProject != null) {
-            ghidraProject.checkPoint(program);
-            ghidraProject.save(program);
+        if (ghidraProject == null) {
+            return;
         }
+        ghidraProject.checkPoint(program);
+        /*
+         * importProgram() can leave a Program whose DomainFile has no on-disk location yet;
+         * GhidraProject.save() then throws ReadOnlyException ("Location does not exist for a save
+         * operation!"). Some Ghidra builds report canSave()==true anyway, so after openFile we always
+         * saveAs once, then use save() / canSave checks thereafter.
+         */
+        if (needsInitialProjectSaveAs) {
+            ghidraProject.saveAs(program, "/", safeProgramDomainName(program), true);
+            needsInitialProjectSaveAs = false;
+            return;
+        }
+        DomainFile df = program.getDomainFile();
+        if (df == null || !df.canSave()) {
+            ghidraProject.saveAs(program, "/", safeProgramDomainName(program), true);
+            return;
+        }
+        try {
+            ghidraProject.save(program);
+        } catch (Exception e) {
+            if (isMissingDomainSaveLocation(e)) {
+                ghidraProject.saveAs(program, "/", safeProgramDomainName(program), true);
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    /** Sanitized name for {@link GhidraProject#saveAs} under the project root folder. */
+    private static String safeProgramDomainName(Program p) {
+        String n = p.getName();
+        if (n == null) {
+            n = "";
+        }
+        n = n.trim();
+        if (n.isEmpty()) {
+            n = "program";
+        }
+        StringBuilder sb = new StringBuilder(n.length());
+        for (int i = 0; i < n.length(); i++) {
+            char c = n.charAt(i);
+            if (c <= ' ' || c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"'
+                    || c == '<' || c == '>' || c == '|') {
+                sb.append('_');
+            } else {
+                sb.append(c);
+            }
+        }
+        String out = sb.toString();
+        if (out.length() > 200) {
+            out = out.substring(0, 200);
+        }
+        return out;
+    }
+
+    private static boolean isMissingDomainSaveLocation(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String msg = t.getMessage();
+            if (msg != null && msg.contains("Location does not exist")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** JSON for Python RE session pack: project folder, domain path, original binary path, Ghidra parent dir. */
@@ -706,6 +776,7 @@ public class GhidraBridge {
     }
 
     private void closeCurrentProgramAndProject() {
+        needsInitialProjectSaveAs = false;
         if (decompiler != null) {
             try {
                 decompiler.dispose();
