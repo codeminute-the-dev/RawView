@@ -12,6 +12,8 @@ import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.base.project.GhidraProject;
 import ghidra.framework.cmd.BackgroundCommand;
 import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.Project;
+import ghidra.framework.model.ProjectLocator;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
@@ -227,8 +229,33 @@ public class GhidraBridge {
                 folderPath = pn.startsWith("/") ? pn : "/" + pn;
             }
         }
+        /*
+         * Python must zip the real on-disk project directory. Ghidra may not materialize
+         * projectBaseDir/projectName until saveAs; ProjectLocator is authoritative once the
+         * project exists (and matches what flushProgramToDisk wrote).
+         */
+        String projectFolderOnDisk = "";
+        try {
+            if (ghidraProject != null) {
+                Project pj = ghidraProject.getProject();
+                if (pj != null) {
+                    ProjectLocator loc = pj.getProjectLocator();
+                    if (loc != null) {
+                        File pd = loc.getProjectDir();
+                        if (pd != null) {
+                            projectFolderOnDisk = pd.getAbsolutePath();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (projectFolderOnDisk.isEmpty()) {
+            projectFolderOnDisk = new File(projectBaseDir, currentProjectName).getAbsolutePath();
+        }
         return "{\"projectName\":\"" + escapeJson(currentProjectName) + "\",\"projectsParent\":\""
-                + escapeJson(projectBaseDir) + "\",\"programFolder\":\"" + escapeJson(folderPath)
+                + escapeJson(projectBaseDir) + "\",\"projectFolderOnDisk\":\""
+                + escapeJson(projectFolderOnDisk) + "\",\"programFolder\":\"" + escapeJson(folderPath)
                 + "\",\"programDomainName\":\"" + escapeJson(df.getName()) + "\",\"originalBinary\":\""
                 + escapeJson(lastOpenedBinaryPath != null ? lastOpenedBinaryPath : "") + "\"}";
     }

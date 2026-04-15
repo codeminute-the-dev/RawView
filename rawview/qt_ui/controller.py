@@ -152,6 +152,7 @@ class RawViewQtController(QObject):
             raise RuntimeError(
                 "Ghidra install directory is not set. Use File → Settings or set GHIDRA_INSTALL_DIR."
             )
+        self.settings.rawview_project_dir.mkdir(parents=True, exist_ok=True)
         self._bridge = GhidraBridgeController(
             ghidra_install_dir=gdir,
             java_executable=default_java_executable(
@@ -662,7 +663,11 @@ class RawViewQtController(QObject):
 
         def work() -> None:
             try:
-                from rawview.re_session import build_session_manifest, zip_ghidra_project_folder
+                from rawview.re_session import (
+                    build_session_manifest,
+                    project_folder_from_re_meta,
+                    zip_ghidra_project_folder,
+                )
 
                 self._ensure_bridge()
                 assert self._api is not None
@@ -671,9 +676,7 @@ class RawViewQtController(QObject):
                 if not meta.get("projectName"):
                     self.status_message.emit("Nothing to save: open a binary first.")
                     return
-                project_parent = Path(meta["projectsParent"]).expanduser()
-                project_name = str(meta["projectName"]).strip()
-                folder = (project_parent / project_name).resolve(strict=False)
+                folder = project_folder_from_re_meta(meta)
                 ui = self.collect_re_session_ui_hints()
                 manifest = build_session_manifest(java_meta=meta, ui=ui)
                 zip_ghidra_project_folder(project_folder=folder, manifest=manifest, dest_zip=dest)
@@ -765,6 +768,7 @@ class RawViewQtController(QObject):
                 from rawview.re_session import (
                     build_session_manifest,
                     mark_re_recovery_dirty,
+                    project_folder_from_re_meta,
                     re_autosave_zip_path,
                     zip_ghidra_project_folder,
                 )
@@ -775,9 +779,7 @@ class RawViewQtController(QObject):
                 meta = self._api.get_re_session_meta()
                 if not meta.get("projectName"):
                     return
-                project_parent = Path(meta["projectsParent"]).expanduser()
-                project_name = str(meta["projectName"]).strip()
-                folder = (project_parent / project_name).resolve(strict=False)
+                folder = project_folder_from_re_meta(meta)
                 ui = self.collect_re_session_ui_hints()
                 manifest = build_session_manifest(java_meta=meta, ui=ui)
                 zip_ghidra_project_folder(

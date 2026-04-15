@@ -73,7 +73,7 @@ if (-not (Test-Path $spec)) {
 $out = Join-Path $Root "dist\RawView"
 if (Test-Path (Join-Path $out "RawView.exe")) {
     Write-Host "OK: $out\RawView.exe" -ForegroundColor Green
-    Write-Host "Next: install Inno Setup, open installer\RawView.iss, Build > Compile (creates dist_installer\RawView-Setup-*.exe)." -ForegroundColor Yellow
+    Write-Host "Next: WiX MSI -> build-msi.bat or scripts\build-msi.ps1 (creates dist_installer\RawView-*.msi)." -ForegroundColor Yellow
 } else {
     Write-Error "Build finished but RawView.exe not found under dist\RawView"
 }

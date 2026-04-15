@@ -85,11 +85,24 @@ def build_session_manifest(
         "schema": SCHEMA_VERSION,
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "projectName": java_meta.get("projectName", ""),
+        "projectFolderOnDisk": java_meta.get("projectFolderOnDisk", ""),
         "programFolder": java_meta.get("programFolder", "/"),
         "programDomainName": java_meta.get("programDomainName", ""),
         "originalBinary": java_meta.get("originalBinary", ""),
         "ui": ui,
     }
+
+
+def project_folder_from_re_meta(meta: dict[str, str]) -> Path:
+    """Directory to zip for RE session export; prefers JVM-reported on-disk path."""
+    disk = (meta.get("projectFolderOnDisk") or "").strip()
+    if disk:
+        return Path(disk).expanduser().resolve(strict=False)
+    parent = (meta.get("projectsParent") or "").strip()
+    name = (meta.get("projectName") or "").strip()
+    if not parent or not name:
+        raise ValueError("RE session metadata missing projectsParent or projectName")
+    return (Path(parent).expanduser() / name).resolve(strict=False)
 
 
 def _atomic_replace_with_retries(src: Path, dst: Path, *, attempts: int = 12, base_delay_s: float = 0.08) -> None:

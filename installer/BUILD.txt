@@ -19,7 +19,7 @@ or:
 
 This runs PyInstaller, then Heat + Candle + Light. Output:
 
-  dist_installer\RawView-0.1.0.msi
+  dist_installer\RawView-<version>.msi   (version from pyproject.toml)
 
 Install scope: per-user under %LOCALAPPDATA%\Programs\RawView (no admin).
 Light suppresses ICE38 / ICE64 / ICE91 for this Heat-generated layout.
@@ -33,16 +33,6 @@ B) Portable folder (no installer)
 ---------------------------------
   powershell -File scripts\build-windows.ps1
   → dist\RawView\  (zip this folder)
-
-
-C) Inno Setup .exe (optional alternative)
------------------------------------------
-  After build-windows.ps1, open installer\RawView.iss in Inno Setup 6.
-  Output: dist_installer\RawView-Setup-0.1.0.exe
-
-  Same AppId across releases: users with an older build can run a newer
-  RawView-Setup-*.exe to update in place (files overwritten in the existing
-  install folder). New machines get the usual first-run install wizard.
 
 
 Notes

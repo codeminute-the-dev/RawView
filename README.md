@@ -66,7 +66,7 @@ Output:
 
 - `dist\RawView\`: portable PyInstaller layout (`RawView.exe`). All Python dependencies from `pyproject.toml` are **frozen into** `_internal` at build time (there is no Python or `pip` on the user's PC for the MSI build).
 - `dist\RawView\BUNDLED_PYTHON_PACKAGES.txt`: `pip freeze` from the build machine after `pip install ".[dev]"`, shipped next to `RawView.exe` for transparency.
-- `dist_installer\RawView-0.1.0.msi`: per-user installer (Start menu + desktop shortcuts, full GPL license text in the wizard).
+- `dist_installer\RawView-<version>.msi`: per-user WiX installer (Start menu + desktop shortcuts, full GPL license text in the wizard).
 
 Rebuild WiX only (reuse `dist\RawView`): `.\scripts\build-msi.ps1 -SkipPyInstaller` (the script still runs `pip install ".[dev]"` and refreshes `BUNDLED_PYTHON_PACKAGES.txt` before harvesting).
 
@@ -77,7 +77,7 @@ Rebuild WiX only (reuse `dist\RawView`): `.\scripts\build-msi.ps1 -SkipPyInstall
 | `rawview/` | Application code; Java bridge **sources** under `rawview/java/` |
 | `packaging/` | `rawview.spec`, WiX `Product.wxs`, icons |
 | `scripts/` | `build-windows.ps1`, `build-msi.ps1`, `export-source-zip.ps1` |
-| `installer/` | Optional Inno Setup script (separate from the MSI pipeline) |
+| `installer/` | Windows installer build notes (`BUILD.txt`) |
 | `pip/` | Helper scripts for editable installs in a dedicated folder |
 | `LICENSE` | GPLv3 full text |
 
