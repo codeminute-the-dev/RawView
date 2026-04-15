@@ -11,8 +11,8 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 AGENT_API_THROTTLE_SEC = 5.0
-# After a 429, sleep this long before retrying the same request (cooperative with Stop).
-AGENT_RATE_LIMIT_COOLDOWN_SEC = 300.0  # 5 minutes
+# Each consecutive 429 adds this much wait time before retry (1st: 5m, 2nd: 10m, 3rd: 15m, …).
+AGENT_RATE_LIMIT_INCREMENT_SEC = 300.0  # 5 minutes per hit
 
 NoticeEmit = Callable[[str, dict[str, Any]], None] | None
 ShouldAbort = Callable[[], bool] | None
@@ -50,10 +50,10 @@ def _format_wait_duration(seconds: float) -> str:
     return " ".join(parts) if parts else "0 seconds"
 
 
-def _rate_limit_notice_message() -> str:
+def _rate_limit_notice_message(wait_sec: float, strike: int) -> str:
     return (
-        "Anthropic rate limit hit. Waiting "
-        f"{_format_wait_duration(AGENT_RATE_LIMIT_COOLDOWN_SEC)}, "
+        f"Anthropic rate limit hit (#{strike}). Waiting "
+        f"{_format_wait_duration(wait_sec)}, "
         "then retrying the same request."
     )
 
@@ -73,8 +73,9 @@ def messages_create_with_backoff(
     *,
     should_abort: ShouldAbort = None,
 ) -> Any:
-    """Sleep before each attempt; on 429 emit optional notice, wait cooldown, retry."""
+    """Sleep before each attempt; on 429 emit optional notice, wait (5 min × strike), retry."""
     skip_throttle = False
+    rate_limit_strikes = 0
     while True:
         if not skip_throttle:
             _sleep_unless_abort(AGENT_API_THROTTLE_SEC, should_abort)
@@ -85,10 +86,20 @@ def messages_create_with_backoff(
             return client.messages.create(**params)
         except Exception as e:
             if is_anthropic_rate_limit(e):
-                logger.warning("Anthropic rate limit (create), backing off: %s", e)
+                rate_limit_strikes += 1
+                wait_sec = AGENT_RATE_LIMIT_INCREMENT_SEC * rate_limit_strikes
+                logger.warning(
+                    "Anthropic rate limit (create), strike %s, backing off %ss: %s",
+                    rate_limit_strikes,
+                    wait_sec,
+                    e,
+                )
                 if emit is not None:
-                    emit("agent_notice", {"message": _rate_limit_notice_message()})
-                _sleep_unless_abort(AGENT_RATE_LIMIT_COOLDOWN_SEC, should_abort)
+                    emit(
+                        "agent_notice",
+                        {"message": _rate_limit_notice_message(wait_sec, rate_limit_strikes)},
+                    )
+                _sleep_unless_abort(wait_sec, should_abort)
                 skip_throttle = True
                 continue
             raise
@@ -103,6 +114,7 @@ def messages_stream_with_backoff(
 ):
     """Return ``client.messages.stream(**params)`` after throttle; retry construction on 429."""
     skip_throttle = False
+    rate_limit_strikes = 0
     while True:
         if not skip_throttle:
             _sleep_unless_abort(AGENT_API_THROTTLE_SEC, should_abort)
@@ -113,10 +125,20 @@ def messages_stream_with_backoff(
             return client.messages.stream(**params)
         except Exception as e:
             if is_anthropic_rate_limit(e):
-                logger.warning("Anthropic rate limit (stream), backing off: %s", e)
+                rate_limit_strikes += 1
+                wait_sec = AGENT_RATE_LIMIT_INCREMENT_SEC * rate_limit_strikes
+                logger.warning(
+                    "Anthropic rate limit (stream), strike %s, backing off %ss: %s",
+                    rate_limit_strikes,
+                    wait_sec,
+                    e,
+                )
                 if emit is not None:
-                    emit("agent_notice", {"message": _rate_limit_notice_message()})
-                _sleep_unless_abort(AGENT_RATE_LIMIT_COOLDOWN_SEC, should_abort)
+                    emit(
+                        "agent_notice",
+                        {"message": _rate_limit_notice_message(wait_sec, rate_limit_strikes)},
+                    )
+                _sleep_unless_abort(wait_sec, should_abort)
                 skip_throttle = True
                 continue
             raise
