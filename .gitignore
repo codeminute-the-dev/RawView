@@ -28,3 +28,6 @@ rawview.env
 /ghidra_extract/
 /temurin_bundle/
 /temurin*_extract/
+
+# Local RE workspace: binaries, dumps, agent notes; not for git push
+/rawview-re-workspace/

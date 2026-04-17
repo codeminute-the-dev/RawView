@@ -25,6 +25,7 @@ dev = ["pyinstaller>=6.0", "pillow>=10.0"]
 
 [project.scripts]
 rawview = "rawview.main:main"
+rawview-re = "rawview.main:main_re"
 
 [tool.setuptools.packages.find]
 where = ["."]

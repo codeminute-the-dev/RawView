@@ -10,9 +10,24 @@ from typing import Any
 from rawview.agent.long_term_memory import append_agent_memory_text, agent_memory_path, read_agent_memory_text
 from rawview.agent.web_search import perform_web_search
 from rawview.ghidra.api import GhidraAPI
-from rawview.qt_ui.work_dock import work_notes_dir
 
 ToolHandler = Callable[[dict[str, Any], GhidraAPI, Callable[[str], None]], str]
+
+
+def _work_notes_dir() -> Path:
+    """Deferred import so `rawview.agent.tools` can load before Qt bootstrap (avoids circular imports)."""
+    from rawview.qt_ui.work_dock import work_notes_dir
+
+    return work_notes_dir()
+
+
+@dataclass(frozen=True)
+class AgentBatchToolPort:
+    """Host callbacks so batch-analysis tools can read the UI queue without global state."""
+
+    status_json: Callable[[], str]
+    open_index_json: Callable[[int, GhidraAPI, Callable[[str, dict[str, Any]], None] | None], str]
+    open_next_json: Callable[[GhidraAPI, Callable[[str, dict[str, Any]], None] | None], str]
 
 
 @dataclass(frozen=True)
@@ -33,11 +48,12 @@ class RegisteredTool:
 def _build_registry(
     on_navigate: Callable[[str], None],
     emit_fn: Callable[[str, dict[str, Any]], None] | None = None,
+    batch_port: AgentBatchToolPort | None = None,
 ) -> dict[str, RegisteredTool]:
     def append_work_markdown(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         md = str(inp.get("markdown", ""))
         title = str(inp.get("tab_title", "")).strip()
-        wd = work_notes_dir()
+        wd = _work_notes_dir()
         if title:
             safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", title)[:60].strip("-") or "note"
             fname = f"{safe}.md"
@@ -59,7 +75,7 @@ def _build_registry(
         return json.dumps({"ok": True})
 
     def list_work_notes(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
-        wd = work_notes_dir()
+        wd = _work_notes_dir()
         wd.mkdir(parents=True, exist_ok=True)
         rows: list[dict[str, Any]] = []
         for f in sorted(wd.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -68,7 +84,7 @@ def _build_registry(
         return json.dumps({"notes": rows, "count": len(rows)})
 
     def read_work_markdown(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
-        wd = work_notes_dir()
+        wd = _work_notes_dir()
         wd.mkdir(parents=True, exist_ok=True)
         key = str(inp.get("filename", "") or inp.get("note", "") or "").strip()
         if not key:
@@ -103,11 +119,17 @@ def _build_registry(
 
     def open_file(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         path = str(inp["path"])
+        run_aa = inp.get("run_auto_analysis", True)
+        if isinstance(run_aa, str):
+            run_aa = run_aa.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            run_aa = bool(run_aa)
         name = api.open_file(path)
-        api.run_auto_analysis()
+        if run_aa:
+            api.run_auto_analysis()
         if emit_fn is not None:
             emit_fn("ghidra_shell_refresh", {"program": name})
-        return json.dumps({"program": name, "path": path})
+        return json.dumps({"program": name, "path": path, "run_auto_analysis": run_aa})
 
     def run_auto(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         api.run_auto_analysis()
@@ -117,7 +139,33 @@ def _build_registry(
 
     def list_functions(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         rows = api.list_functions()
-        return json.dumps({"functions": rows, "count": len(rows)})
+        total_defined = len(rows)
+        needle = str(inp.get("name_contains", "") or "").strip().lower()
+        if needle:
+            rows = [r for r in rows if needle in str(r.get("name", "")).lower()]
+        matched_after_name_filter = len(rows)
+        off = int(inp.get("offset", 0) or 0)
+        off = max(0, off)
+        if off:
+            rows = rows[off:]
+        lim_raw = inp.get("limit", None)
+        truncated_by_limit = False
+        if lim_raw is not None:
+            lim = int(lim_raw)
+            lim = max(1, min(lim, 50_000))
+            if len(rows) > lim:
+                truncated_by_limit = True
+                rows = rows[:lim]
+        return json.dumps(
+            {
+                "functions": rows,
+                "count": len(rows),
+                "total_defined": total_defined,
+                "matched_after_name_filter": matched_after_name_filter,
+                "offset": off,
+                "truncated": truncated_by_limit,
+            }
+        )
 
     def decompile_function(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         addr = str(inp["address"])
@@ -137,11 +185,41 @@ def _build_registry(
 
     def get_strings(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         rows = api.get_strings()
-        return json.dumps({"strings": rows, "count": len(rows)})
+        total = len(rows)
+        off = int(inp.get("offset", 0) or 0)
+        off = max(0, off)
+        if off:
+            rows = rows[off:]
+        lim_raw = inp.get("limit", None)
+        truncated_by_limit = False
+        if lim_raw is not None:
+            lim = int(lim_raw)
+            lim = max(1, min(lim, 50_000))
+            if len(rows) > lim:
+                truncated_by_limit = True
+                rows = rows[:lim]
+        return json.dumps(
+            {"strings": rows, "count": len(rows), "total_defined": total, "offset": off, "truncated": truncated_by_limit}
+        )
 
     def get_imports(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         rows = api.get_imports()
-        return json.dumps({"imports": rows, "count": len(rows)})
+        total = len(rows)
+        off = int(inp.get("offset", 0) or 0)
+        off = max(0, off)
+        if off:
+            rows = rows[off:]
+        lim_raw = inp.get("limit", None)
+        truncated_by_limit = False
+        if lim_raw is not None:
+            lim = int(lim_raw)
+            lim = max(1, min(lim, 50_000))
+            if len(rows) > lim:
+                truncated_by_limit = True
+                rows = rows[:lim]
+        return json.dumps(
+            {"imports": rows, "count": len(rows), "total_defined": total, "offset": off, "truncated": truncated_by_limit}
+        )
 
     def get_exports(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
         rows = api.get_exports()
@@ -242,21 +320,38 @@ def _build_registry(
                 results.append({"index": i, "error": "missing_tool_name"})
                 continue
             try:
-                out = run_tool(n, sub, api, nav, emit_fn)
+                out = run_tool(n, sub, api, nav, emit_fn, batch_port)
                 results.append({"index": i, "name": n, "result": out})
             except Exception as e:
                 results.append({"index": i, "name": n, "error": str(e)})
         return json.dumps({"ok": True, "count": len(calls), "results": results}, ensure_ascii=False)
 
+    def analysis_batch_status(_inp: dict[str, Any], _api: GhidraAPI, _nav: Callable[[str], None]) -> str:
+        if batch_port is None:
+            return json.dumps({"error": "batch_port_unconfigured"})
+        return batch_port.status_json()
+
+    def analysis_batch_open_index(inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
+        if batch_port is None:
+            return json.dumps({"error": "batch_port_unconfigured"})
+        idx = int(inp.get("index", -1))
+        return batch_port.open_index_json(idx, api, emit_fn)
+
+    def analysis_batch_open_next(_inp: dict[str, Any], api: GhidraAPI, _nav: Callable[[str], None]) -> str:
+        if batch_port is None:
+            return json.dumps({"error": "batch_port_unconfigured"})
+        return batch_port.open_next_json(api, emit_fn)
+
     tools: list[RegisteredTool] = [
         RegisteredTool(
             name="open_file",
             description=(
-                "Import a new executable/library into Ghidra from disk, make it the active program, then run "
-                "full automatic analysis (analysis scripts, references, etc.). The main window File → Open path "
-                "only imports until you run auto-analysis manually; this tool always analyzes after import. "
-                "Use when the user supplies a path or wants to switch binaries. Do not use for re-analyzing an "
-                "already loaded image (use run_auto_analysis)."
+                "Import a new executable/library into Ghidra from disk and make it the active program. "
+                "By default runs full automatic analysis immediately (set run_auto_analysis false to import only, "
+                "then call run_auto_analysis yourself). Use when the user supplies a path or wants to switch binaries. "
+                "If they are using the **batch analysis queue** in the File dock, prefer **`analysis_batch_open_next`** "
+                "or **`analysis_batch_open_index`** (after `analysis_batch_status`) so queue indices stay aligned. "
+                "Do not use for re-analyzing an already loaded image without a new path (use run_auto_analysis)."
             ),
             parameters_schema={
                 "type": "object",
@@ -264,18 +359,60 @@ def _build_registry(
                     "path": {
                         "type": "string",
                         "description": "Absolute file path to the binary (Windows: drive letter, escaped backslashes ok).",
-                    }
+                    },
+                    "run_auto_analysis": {
+                        "type": "boolean",
+                        "description": "If true (default), run Ghidra auto-analysis after import. If false, import only.",
+                    },
                 },
                 "required": ["path"],
             },
             handler=open_file,
         ),
         RegisteredTool(
+            name="analysis_batch_status",
+            description=(
+                "Read the File-dock **batch analysis** queue shared with the user: `count`, `next_index`, "
+                "`loaded_program`, `next_path`, `basenames`, and **`items`** (each entry has `index`, `basename`, "
+                "`path`). Call this whenever the user refers to multiple binaries, the queue, or “the next file”. "
+                "To load one, use `analysis_batch_open_index` with that `index`, or `analysis_batch_open_next` "
+                "to follow `next_index` order. Ghidra only holds one program at a time."
+            ),
+            parameters_schema={"type": "object", "properties": {}},
+            handler=analysis_batch_status,
+        ),
+        RegisteredTool(
+            name="analysis_batch_open_index",
+            description=(
+                "Batch analysis: open queue row `index` (0-based, from `analysis_batch_status.items`). "
+                "Imports that file into Ghidra, runs full auto-analysis, refreshes the UI, and sets the batch "
+                "cursor to `index+1` on success (matches the user double-clicking that row)."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "Zero-based index into the batch queue."},
+                },
+                "required": ["index"],
+            },
+            handler=analysis_batch_open_index,
+        ),
+        RegisteredTool(
+            name="analysis_batch_open_next",
+            description=(
+                "Batch analysis: open the file at `next_index` from `analysis_batch_status` (same as the "
+                "File dock **Open next** button). Runs import + full auto-analysis and advances the cursor on success."
+            ),
+            parameters_schema={"type": "object", "properties": {}},
+            handler=analysis_batch_open_next,
+        ),
+        RegisteredTool(
             name="run_auto_analysis",
             description=(
                 "Re-run Ghidra’s automatic analysis pipeline on the **currently loaded** program only. "
                 "Takes no arguments. Use after renaming segments, changing loader options, or when the user "
-                "explicitly asks to (re)analyze or refresh analysis. open_file already runs analysis once after import."
+                "explicitly asks to (re)analyze or refresh analysis. open_file runs this by default unless "
+                "run_auto_analysis was set false on that call."
             ),
             parameters_schema={
                 "type": "object",
@@ -287,10 +424,26 @@ def _build_registry(
         RegisteredTool(
             name="list_functions",
             description=(
-                "Return every defined function: names, entry addresses, and basic metadata. Best first step "
-                "after load to locate interesting code; pair with get_entry_points or get_imports to prioritize."
+                "Defined functions with names and entry addresses. Prefer optional limit/offset/name_contains on "
+                "large binaries to save tokens; omit limit only when you need the full list."
             ),
-            parameters_schema={"type": "object", "properties": {}},
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max functions to return after filtering (1–50000). Omit to return all (can be huge).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Skip this many functions after name_contains filter (default 0).",
+                    },
+                    "name_contains": {
+                        "type": "string",
+                        "description": "If set, only functions whose name contains this substring (case-insensitive).",
+                    },
+                },
+            },
             handler=list_functions,
         ),
         RegisteredTool(
@@ -352,19 +505,29 @@ def _build_registry(
         RegisteredTool(
             name="get_strings",
             description=(
-                "All defined string literals (value + address). Fast way to find protocols, file paths, "
-                "error messages, and hard-coded keys before deeper analysis."
+                "Defined string literals (value + address). Optional limit/offset window large tables and save tokens."
             ),
-            parameters_schema={"type": "object", "properties": {}},
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max rows after offset (1–50000). Omit for full list."},
+                    "offset": {"type": "integer", "description": "Skip this many strings (default 0)."},
+                },
+            },
             handler=get_strings,
         ),
         RegisteredTool(
             name="get_imports",
             description=(
-                "Dynamic/static import table: external DLLs/APIs used by the binary. Use early to spot "
-                "crypto, network, process, or file APIs."
+                "Import table (DLLs/APIs). Optional limit/offset on very large tables to reduce tool-result size."
             ),
-            parameters_schema={"type": "object", "properties": {}},
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max rows after offset (1–50000). Omit for full list."},
+                    "offset": {"type": "integer", "description": "Skip this many imports (default 0)."},
+                },
+            },
             handler=get_imports,
         ),
         RegisteredTool(
@@ -718,8 +881,11 @@ def _build_registry(
     return {t.name: t for t in tools}
 
 
-def anthropic_tool_list(on_navigate: Callable[[str], None]) -> list[dict[str, Any]]:
-    return [t.anthropic_schema() for t in _build_registry(on_navigate).values()]
+def anthropic_tool_list(
+    on_navigate: Callable[[str], None],
+    batch_port: AgentBatchToolPort | None = None,
+) -> list[dict[str, Any]]:
+    return [t.anthropic_schema() for t in _build_registry(on_navigate, None, batch_port).values()]
 
 
 def run_tool(
@@ -728,8 +894,9 @@ def run_tool(
     api: GhidraAPI,
     on_navigate: Callable[[str], None],
     emit: Callable[[str, dict[str, Any]], None] | None = None,
+    batch_port: AgentBatchToolPort | None = None,
 ) -> str:
-    reg = _build_registry(on_navigate, emit)
+    reg = _build_registry(on_navigate, emit, batch_port)
     if name not in reg:
         return json.dumps({"error": f"unknown_tool:{name}"})
     if isinstance(arguments_json, str):

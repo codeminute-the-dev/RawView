@@ -1,4 +1,4 @@
-# Zip exactly what Git tracks (source only — no dist, no local Ghidra/JDK copies).
+# Zip exactly what Git tracks (source only; no dist, no local Ghidra/JDK copies).
 # Run from repo root:
 #   powershell -ExecutionPolicy Bypass -File scripts\export-source-zip.ps1
 # Output: parent folder, e.g. ..\RawView-source-0.1.0.zip

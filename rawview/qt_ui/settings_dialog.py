@@ -42,7 +42,12 @@ from rawview.config import (
 from rawview.ghidra_bootstrap import DEFAULT_GHIDRA_ZIP_URL, download_and_extract_ghidra, is_valid_ghidra_root
 from rawview.java_bootstrap import download_temurin_jdk
 from rawview.qt_ui.controller import RawViewQtController
-from rawview.qt_ui.shortcuts import SHORTCUT_DEFAULTS, load_shortcut_map, save_shortcut_map
+from rawview.qt_ui.shortcuts import (
+    AGENT_RELATED_SHORTCUT_IDS,
+    SHORTCUT_DEFAULTS,
+    load_shortcut_map,
+    save_shortcut_map,
+)
 from rawview.qt_ui.themes import (
     THEME_IDS,
     main_window_stylesheet,
@@ -92,7 +97,7 @@ class SettingsDialog(QDialog):
         self._agent_temp.setToolTip(
             "Anthropic Messages API: optional sampling temperature (default in API docs: 1.0). "
             "Lower ≈ more analytical / steadier tool arguments; higher ≈ more varied prose. "
-            "When extended thinking is enabled, the API requires temperature 1.0 — RawView sends 1.0 for those "
+            "When extended thinking is enabled, the API requires temperature 1.0; RawView sends 1.0 for those "
             "requests and uses this value only when thinking is off. "
             "Do not set top_p elsewhere - use temperature only."
         )
@@ -163,13 +168,35 @@ class SettingsDialog(QDialog):
         form.addRow("Compiled bridge classes dir", row_c)
         form.addRow("RAWVIEW_JAVA_CLASSPATH", self._classpath)
         form.addRow("", self._auto_bridge)
-        form.addRow("Anthropic API key", self._api_key)
-        form.addRow("Anthropic model", self._model)
-        form.addRow("", self._think)
-        form.addRow("Thinking budget (tokens)", self._think_budget)
-        form.addRow("Agent max turns", self._max_turns)
-        form.addRow("Agent history messages", self._hist)
-        form.addRow("Agent temperature (0-1)", self._agent_temp)
+
+        self._agent_form_block = QWidget()
+        af = QFormLayout(self._agent_form_block)
+        af.setSpacing(10)
+        af.setHorizontalSpacing(14)
+        af.addRow("Anthropic API key", self._api_key)
+        af.addRow("Anthropic model", self._model)
+        af.addRow("", self._think)
+        af.addRow("Thinking budget (tokens)", self._think_budget)
+        af.addRow("Agent max turns", self._max_turns)
+        af.addRow("Agent history messages", self._hist)
+        af.addRow("Agent temperature (0-1)", self._agent_temp)
+        self._economy = QCheckBox("Apply economy preset on save (lower agent API usage)")
+        self._economy.setToolTip(
+            "When checked and you click OK, saves shorter chat history (32 messages), fewer max turns (24), "
+            "disables extended thinking, and sets thinking budget to 2048 tokens. Uncheck to use the numeric "
+            "fields above instead."
+        )
+        af.addRow("", self._economy)
+        self._agent_form_block.setVisible(controller.agent_enabled)
+        if not controller.agent_enabled:
+            self._no_agent_note = QLabel(
+                "This RawView build has <b>no in-app Anthropic agent</b>. "
+                "Use Cursor (or another assistant) beside the app for conversational RE help."
+            )
+            self._no_agent_note.setWordWrap(True)
+            self._no_agent_note.setTextFormat(Qt.TextFormat.RichText)
+            form.addRow(self._no_agent_note)
+        form.addRow(self._agent_form_block)
 
         general_inner = QWidget()
         general_inner.setLayout(form)
@@ -222,11 +249,17 @@ class SettingsDialog(QDialog):
         vl = QVBoxLayout(page)
         vl.setContentsMargins(4, 4, 4, 4)
         overrides = load_shortcut_map(self._ui_state)
-        table = QTableWidget(len(SHORTCUT_DEFAULTS), 2)
+        shortcut_ids = [
+            sid
+            for sid in SHORTCUT_DEFAULTS
+            if self._ctrl.agent_enabled or sid not in AGENT_RELATED_SHORTCUT_IDS
+        ]
+        table = QTableWidget(len(shortcut_ids), 2)
         table.setHorizontalHeaderLabels(["Action", "Shortcut (portable text)"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for row, (sid, (desc, default)) in enumerate(SHORTCUT_DEFAULTS.items()):
+        for row, sid in enumerate(shortcut_ids):
+            desc, default = SHORTCUT_DEFAULTS[sid]
             table.setItem(row, 0, QTableWidgetItem(desc))
             ed = QLineEdit()
             ed.setText(overrides.get(sid, default))
@@ -443,15 +476,22 @@ class SettingsDialog(QDialog):
         data["RAWVIEW_JAVA_CLASSES_DIR"] = cls if cls else ""
         cp = self._classpath.toPlainText().strip()
         data["RAWVIEW_JAVA_CLASSPATH"] = cp if cp else ""
-        data["ANTHROPIC_API_KEY"] = self._api_key.text().strip()
-        data["ANTHROPIC_MODEL"] = self._model.text().strip() or "claude-opus-4-6"
-        data["AGENT_MAX_TURNS"] = str(self._max_turns.value())
-        data["AGENT_HISTORY_MESSAGES"] = str(self._hist.value())
-        data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
-        data["AGENT_EXTENDED_THINKING"] = "true" if self._think.isChecked() else "false"
-        data["AGENT_THINKING_BUDGET_TOKENS"] = str(self._think_budget.value())
         data["RAWVIEW_AUTO_START_BRIDGE"] = "true" if self._auto_bridge.isChecked() else "false"
         data["RAWVIEW_THEME"] = str(self._theme.currentData() or "tokyo_night")
+
+        if self._ctrl.agent_enabled:
+            data["ANTHROPIC_API_KEY"] = self._api_key.text().strip()
+            data["ANTHROPIC_MODEL"] = self._model.text().strip() or "claude-opus-4-6"
+            data["AGENT_MAX_TURNS"] = str(self._max_turns.value())
+            data["AGENT_HISTORY_MESSAGES"] = str(self._hist.value())
+            data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
+            data["AGENT_EXTENDED_THINKING"] = "true" if self._think.isChecked() else "false"
+            data["AGENT_THINKING_BUDGET_TOKENS"] = str(self._think_budget.value())
+            if self._economy.isChecked():
+                data["AGENT_HISTORY_MESSAGES"] = "32"
+                data["AGENT_MAX_TURNS"] = "24"
+                data["AGENT_EXTENDED_THINKING"] = "false"
+                data["AGENT_THINKING_BUDGET_TOKENS"] = "2048"
 
         save_user_settings_file(data)
         self._ctrl.reload_settings()

@@ -9,7 +9,7 @@ before matching.
 
 from __future__ import annotations
 
-# (prefix, max_output_tokens) — first matching prefix wins; list is most-specific first.
+# (prefix, max_output_tokens): first matching prefix wins; list is most-specific first.
 _CLAUDE_MODEL_PREFIX_MAX_OUTPUT: tuple[tuple[str, int], ...] = (
     # Claude 4.6 (latest)
     ("claude-opus-4-6", 128_000),

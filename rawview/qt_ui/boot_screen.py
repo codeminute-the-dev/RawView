@@ -36,7 +36,7 @@ def _opaque_label(w: QWidget) -> None:
 
 
 class BootSplash(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, *, no_agent: bool = False) -> None:
         super().__init__()
         self.setFixedSize(560, 400)
         self.setWindowFlags(
@@ -91,7 +91,12 @@ class BootSplash(QWidget):
         self._subtitle.setStyleSheet(f"color: #7aa2f7; font-size: 14px; background-color: {_SPLASH_PANEL};")
         _opaque_label(self._subtitle)
 
-        tag = QLabel("Ghidra headless · optional Claude agent")
+        tag_txt = (
+            "Ghidra headless · manual RE (use Cursor for AI)"
+            if no_agent
+            else "Ghidra headless · optional Claude agent"
+        )
+        tag = QLabel(tag_txt)
         tag.setStyleSheet(f"color: #565f89; font-size: 11px; background-color: {_SPLASH_PANEL};")
         _opaque_label(tag)
 

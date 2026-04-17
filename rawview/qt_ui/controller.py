@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import datetime
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from PySide6.QtCore import QObject, Signal
 
 from rawview.agent.anthropic_backoff import AnthropicBackoffInterrupted
 from rawview.agent.brain import AgentBrain
+from rawview.agent.tools import AgentBatchToolPort
 from rawview.agent.conversation_summarize import (
     flatten_messages_for_summary,
     summarize_conversation_transcript,
@@ -73,9 +75,11 @@ class RawViewQtController(QObject):
     cfg_graph_updated = Signal(object)  # dict from get_control_flow_graph
     bridge_prewarm_finished = Signal(bool, str)  # ok, message (NO_GHIDRA / BAD_GHIDRA / ...)
     session_restore_hints = Signal(object)  # dict: hex_dump_size, hex_dump_bpl (optional current_address)
+    analysis_batch_changed = Signal(object)  # dict: paths, next_index, count, loaded_program
 
-    def __init__(self) -> None:
+    def __init__(self, *, no_agent: bool = False) -> None:
         super().__init__()
+        self._no_agent = bool(no_agent)
         self.settings: Settings = load_settings()
         self._bridge: GhidraBridgeController | None = None
         self._api: GhidraAPI | None = None
@@ -90,6 +94,13 @@ class RawViewQtController(QObject):
         self._agent_stop_event = threading.Event()
         self._active_program: str = ""
         self._re_autosave_lock = threading.Lock()
+        self._batch_lock = threading.Lock()
+        self._analysis_batch_paths: list[str] = []
+        self._analysis_batch_next_index: int = 0
+
+    @property
+    def agent_enabled(self) -> bool:
+        return not self._no_agent
 
     def reload_settings(self) -> None:
         """Reload .env / user settings after the Settings dialog saves."""
@@ -97,7 +108,8 @@ class RawViewQtController(QObject):
         self.settings = load_settings()
         if _bridge_restart_fingerprint(self.settings) != old_fp:
             self.shutdown_bridge()
-        self.agent_memory = ConversationMemory(max_messages=self.settings.agent_history_messages)
+        if self.agent_enabled:
+            self.agent_memory = ConversationMemory(max_messages=self.settings.agent_history_messages)
 
     def prewarm_bridge_if_enabled(self) -> None:
         """Start Ghidra JVM on startup when configured (runs in a background thread)."""
@@ -274,7 +286,7 @@ class RawViewQtController(QObject):
             logger.warning("advance_program_address: %s", e)
             return ""
 
-    def open_binary(self, path: str) -> None:
+    def open_binary(self, path: str, *, after_success: Callable[[], None] | None = None) -> None:
         if not (path or "").strip():
             self.status_message.emit("The file path cannot be empty.")
             return
@@ -301,6 +313,8 @@ class RawViewQtController(QObject):
                     self.status_message.emit(
                         f"Imported: {name} -  no address to show yet; run auto-analysis or enter an address."
                     )
+                if after_success is not None:
+                    after_success()
             except Exception as e:
                 logger.exception("open_binary")
                 self._active_program = ""
@@ -308,6 +322,133 @@ class RawViewQtController(QObject):
                 self.status_message.emit("Open failed.")
 
         threading.Thread(target=work, name="rawview-open", daemon=True).start()
+
+    def _analysis_batch_emit_changed(self) -> None:
+        self.analysis_batch_changed.emit(self.analysis_batch_snapshot())
+
+    def analysis_batch_snapshot(self) -> dict[str, Any]:
+        with self._batch_lock:
+            return {
+                "paths": list(self._analysis_batch_paths),
+                "next_index": int(self._analysis_batch_next_index),
+                "count": len(self._analysis_batch_paths),
+                "loaded_program": str(self._active_program or ""),
+            }
+
+    def set_analysis_batch(self, paths: list[str]) -> None:
+        cleaned: list[str] = []
+        for p in paths:
+            if not (p or "").strip():
+                continue
+            try:
+                cleaned.append(str(Path(p).resolve()))
+            except OSError:
+                cleaned.append(str(Path(p).absolute()))
+        with self._batch_lock:
+            self._analysis_batch_paths = cleaned
+            self._analysis_batch_next_index = 0
+        self.status_message.emit(f"Batch analysis queue: {len(cleaned)} file(s).")
+        self._analysis_batch_emit_changed()
+
+    def clear_analysis_batch(self) -> None:
+        with self._batch_lock:
+            self._analysis_batch_paths = []
+            self._analysis_batch_next_index = 0
+        self.status_message.emit("Batch analysis queue cleared.")
+        self._analysis_batch_emit_changed()
+
+    def open_analysis_batch_next(self) -> None:
+        with self._batch_lock:
+            if self._analysis_batch_next_index >= len(self._analysis_batch_paths):
+                self.status_message.emit("Batch queue: no more files (or queue is empty).")
+                return
+            path = self._analysis_batch_paths[self._analysis_batch_next_index]
+            idx = self._analysis_batch_next_index
+
+        def bump() -> None:
+            with self._batch_lock:
+                self._analysis_batch_next_index = idx + 1
+            self._analysis_batch_emit_changed()
+
+        self.open_binary(path, after_success=bump)
+
+    def open_analysis_batch_at(self, index: int) -> None:
+        """Open the queued binary at ``index`` and set the next cursor to ``index + 1`` (same as Open next, but explicit)."""
+        with self._batch_lock:
+            if index < 0 or index >= len(self._analysis_batch_paths):
+                self.status_message.emit("Batch queue: nothing at that index (or queue is empty).")
+                return
+            path = self._analysis_batch_paths[index]
+            idx = index
+
+        def bump() -> None:
+            with self._batch_lock:
+                self._analysis_batch_next_index = idx + 1
+            self._analysis_batch_emit_changed()
+
+        self.open_binary(path, after_success=bump)
+
+    def pinned_goal_for_analysis_batch(self) -> str | None:
+        with self._batch_lock:
+            if not self._analysis_batch_paths:
+                return None
+            n = len(self._analysis_batch_paths)
+            i = int(self._analysis_batch_next_index)
+            samples = [Path(p).name for p in self._analysis_batch_paths[:3]]
+            tail = f" (+{n - 3} more)" if n > 3 else ""
+            return (
+                f"Batch analysis: {n} queued binary path(s); next queue index is {i}. "
+                f"First names: {', '.join(samples)}{tail}. "
+                "Only one Ghidra program is loaded at a time; use analysis_batch_status (see `items` for index/path) "
+                "then analysis_batch_open_next or analysis_batch_open_index to load; use list_functions with limit when mapping."
+            )
+
+    def agent_batch_status_json(self) -> str:
+        snap = self.analysis_batch_snapshot()
+        paths = snap["paths"]
+        basenames = [Path(p).name for p in paths]
+        next_i = snap["next_index"]
+        next_path: str | None = None
+        if 0 <= next_i < len(paths):
+            next_path = paths[next_i]
+        items = [{"index": i, "basename": Path(p).name, "path": p} for i, p in enumerate(paths)]
+        return json.dumps(
+            {
+                "basenames": basenames,
+                "items": items,
+                "next_index": next_i,
+                "count": snap["count"],
+                "loaded_program": snap["loaded_program"],
+                "next_path": next_path,
+            }
+        )
+
+    def agent_batch_open_index(self, index: int, api: GhidraAPI, emit_fn: Callable[[str, dict[str, Any]], None]) -> str:
+        with self._batch_lock:
+            if index < 0 or index >= len(self._analysis_batch_paths):
+                return json.dumps({"error": "index_out_of_range", "index": index, "count": len(self._analysis_batch_paths)})
+            path = self._analysis_batch_paths[index]
+        try:
+            name = api.open_file(path)
+            api.run_auto_analysis()
+            if emit_fn is not None:
+                emit_fn("ghidra_shell_refresh", {"program": name})
+            with self._batch_lock:
+                self._analysis_batch_next_index = index + 1
+            self._analysis_batch_emit_changed()
+            return json.dumps({"ok": True, "program": name, "path": path, "index": index, "next_index": index + 1})
+        except Exception as e:
+            logger.exception("agent_batch_open_index")
+            return json.dumps({"error": str(e), "path": path, "index": index})
+
+    def agent_batch_open_next(self, api: GhidraAPI, emit_fn: Callable[[str, dict[str, Any]], None]) -> str:
+        with self._batch_lock:
+            if self._analysis_batch_next_index >= len(self._analysis_batch_paths):
+                return json.dumps(
+                    {"error": "batch_queue_empty_or_finished", "next_index": self._analysis_batch_next_index, "count": len(self._analysis_batch_paths)}
+                )
+            idx = self._analysis_batch_next_index
+        return self.agent_batch_open_index(idx, api, emit_fn)
 
     def run_auto_analysis(self) -> None:
         def work() -> None:
@@ -363,6 +504,8 @@ class RawViewQtController(QObject):
         self.functions_updated.emit(rows)
 
     def interrupt_agent(self) -> None:
+        if not self.agent_enabled:
+            return
         self._agent_stop_event.set()
         if self._brain is not None:
             self._brain.interrupt()
@@ -378,6 +521,7 @@ class RawViewQtController(QObject):
                 self._functions_cache = rows
                 pn = (program_name or "").strip()
                 if pn:
+                    self._active_program = pn
                     self.program_changed.emit(pn)
                 self.functions_updated.emit(rows)
                 self.strings_updated.emit(self._api.get_strings())
@@ -398,6 +542,8 @@ class RawViewQtController(QObject):
         threading.Thread(target=work, name="rawview-agent-shell-refresh", daemon=True).start()
 
     def send_agent_prompt(self, text: str) -> None:
+        if not self.agent_enabled:
+            return
         text = text.strip()
         if not text:
             return
@@ -440,6 +586,12 @@ class RawViewQtController(QObject):
                 except Exception as e:
                     self.agent_event.emit("agent_error", {"message": str(e)})
                     return
+                batch_port = AgentBatchToolPort(
+                    status_json=self.agent_batch_status_json,
+                    open_index_json=self.agent_batch_open_index,
+                    open_next_json=self.agent_batch_open_next,
+                )
+                goal = self.pinned_goal_for_analysis_batch()
                 self._brain = AgentBrain(
                     api_key=self.settings.anthropic_api_key,
                     model=self.settings.anthropic_model,
@@ -451,6 +603,7 @@ class RawViewQtController(QObject):
                     extended_thinking=self.settings.agent_extended_thinking,
                     thinking_budget_tokens=self.settings.agent_thinking_budget_tokens,
                     temperature=self.settings.agent_temperature,
+                    batch_port=batch_port,
                 )
                 if self._agent_stop_event.is_set():
                     self._brain.interrupt()
@@ -460,7 +613,7 @@ class RawViewQtController(QObject):
                     try:
                         try:
                             assert self._brain is not None
-                            self._brain.run_user_prompt(text)
+                            self._brain.run_user_prompt(text, goal=goal)
                         except Exception as e:
                             logger.exception("agent")
                             self.agent_event.emit(
@@ -478,6 +631,8 @@ class RawViewQtController(QObject):
 
     def _start_summarize_bootstrap(self) -> None:
         """Compress agent_memory with a side API call (/summarize). Uses _agent_thread slot so agent cannot overlap."""
+        if not self.agent_enabled:
+            return
 
         def start() -> None:
             def emit(kind: str, data: dict[str, Any]) -> None:

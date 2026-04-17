@@ -8,6 +8,8 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 
 # id: (description for settings UI, default QKeySequence string)
+AGENT_RELATED_SHORTCUT_IDS = frozenset({"focus_agent_prompt", "run_agent", "stop_agent", "toggle_agent_dock"})
+
 SHORTCUT_DEFAULTS: dict[str, tuple[str, str]] = {
     "open_binary": ("Open binary", "Ctrl+O"),
     "open_settings": ("Open settings", "Ctrl+,"),

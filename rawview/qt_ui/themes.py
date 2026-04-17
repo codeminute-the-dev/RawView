@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtWidgets import QApplication
 
 from rawview.theme_ids import THEME_IDS
@@ -347,6 +349,377 @@ def main_window_stylesheet(theme_id: str) -> str:
         QPushButton { background: #24283b; border: 1px solid #414868; padding: 6px 12px; border-radius: 8px; }
         QPushButton:hover { background: #414868; }
     """
+
+
+@dataclass(frozen=True)
+class _AgentDockChrome:
+    """Embed colors for the Agent dock (must stay aligned with ``main_window_stylesheet`` per theme)."""
+
+    root_bg: str
+    root_fg: str
+    activity_bg: str
+    activity_border: str
+    muted: str
+    thinking_fg: str
+    thinking_bg: str
+    thinking_border: str
+    stream_fg: str
+    stream_bg: str
+    feed_bg: str
+    feed_fg: str
+    feed_border: str
+    prompt_bg: str
+    prompt_fg: str
+    prompt_border: str
+    html_body_bg: str
+    html_body_fg: str
+    html_rvt: str
+    html_rva: str
+    html_tool_bg: str
+    html_tool_border: str
+    html_pre_fg: str
+    html_meta: str
+    html_link: str
+    html_notice: str
+    html_code_bg: str
+
+
+_AGENT_DOCK_CHROME: dict[str, _AgentDockChrome] = {
+    "tokyo_night": _AgentDockChrome(
+        root_bg="#1a1b26",
+        root_fg="#c0caf5",
+        activity_bg="#1f212d",
+        activity_border="#3a3f55",
+        muted="#aab6d6",
+        thinking_fg="#9aa7b8",
+        thinking_bg="#171923",
+        thinking_border="#3d4358",
+        stream_fg="#d0d5e0",
+        stream_bg="#1b1d28",
+        feed_bg="#16161e",
+        feed_fg="#c8ccd8",
+        feed_border="#2c2f3d",
+        prompt_bg="#1e2130",
+        prompt_fg="#d8dbe6",
+        prompt_border="#2c2f3d",
+        html_body_bg="#16161e",
+        html_body_fg="#c8ccd8",
+        html_rvt="#8b92a8",
+        html_rva="#d8dbe6",
+        html_tool_bg="#1e2130",
+        html_tool_border="#5b7aa8",
+        html_pre_fg="#b8bfd4",
+        html_meta="#6b7080",
+        html_link="#8eb8e5",
+        html_notice="#c9b87a",
+        html_code_bg="#252836",
+    ),
+    "gruvbox": _AgentDockChrome(
+        root_bg="#282828",
+        root_fg="#ebdbb2",
+        activity_bg="#32302f",
+        activity_border="#504945",
+        muted="#bdae93",
+        thinking_fg="#d5c4a1",
+        thinking_bg="#3c3836",
+        thinking_border="#504945",
+        stream_fg="#ebdbb2",
+        stream_bg="#32302f",
+        feed_bg="#3c3836",
+        feed_fg="#ebdbb2",
+        feed_border="#504945",
+        prompt_bg="#3c3836",
+        prompt_fg="#ebdbb2",
+        prompt_border="#504945",
+        html_body_bg="#3c3836",
+        html_body_fg="#ebdbb2",
+        html_rvt="#928374",
+        html_rva="#ebdbb2",
+        html_tool_bg="#504945",
+        html_tool_border="#83a598",
+        html_pre_fg="#d5c4a1",
+        html_meta="#928374",
+        html_link="#83a598",
+        html_notice="#fabd2f",
+        html_code_bg="#504945",
+    ),
+    "catppuccin_mocha": _AgentDockChrome(
+        root_bg="#1e1e2e",
+        root_fg="#cdd6f4",
+        activity_bg="#252536",
+        activity_border="#45475a",
+        muted="#9399b2",
+        thinking_fg="#a6adc8",
+        thinking_bg="#181825",
+        thinking_border="#45475a",
+        stream_fg="#cdd6f4",
+        stream_bg="#313244",
+        feed_bg="#313244",
+        feed_fg="#cdd6f4",
+        feed_border="#45475a",
+        prompt_bg="#313244",
+        prompt_fg="#cdd6f4",
+        prompt_border="#45475a",
+        html_body_bg="#313244",
+        html_body_fg="#cdd6f4",
+        html_rvt="#6c7086",
+        html_rva="#cdd6f4",
+        html_tool_bg="#45475a",
+        html_tool_border="#89b4fa",
+        html_pre_fg="#bac2de",
+        html_meta="#6c7086",
+        html_link="#89b4fa",
+        html_notice="#f9e2af",
+        html_code_bg="#45475a",
+    ),
+    "nord": _AgentDockChrome(
+        root_bg="#2e3440",
+        root_fg="#eceff4",
+        activity_bg="#3b4252",
+        activity_border="#4c566a",
+        muted="#d8dee9",
+        thinking_fg="#e5e9f0",
+        thinking_bg="#434c5e",
+        thinking_border="#4c566a",
+        stream_fg="#eceff4",
+        stream_bg="#3b4252",
+        feed_bg="#3b4252",
+        feed_fg="#eceff4",
+        feed_border="#4c566a",
+        prompt_bg="#3b4252",
+        prompt_fg="#eceff4",
+        prompt_border="#4c566a",
+        html_body_bg="#3b4252",
+        html_body_fg="#eceff4",
+        html_rvt="#616e88",
+        html_rva="#eceff4",
+        html_tool_bg="#434c5e",
+        html_tool_border="#88c0d0",
+        html_pre_fg="#e5e9f0",
+        html_meta="#616e88",
+        html_link="#88c0d0",
+        html_notice="#ebcb8b",
+        html_code_bg="#434c5e",
+    ),
+    "dracula": _AgentDockChrome(
+        root_bg="#282a36",
+        root_fg="#f8f8f2",
+        activity_bg="#343746",
+        activity_border="#6272a4",
+        muted="#bd93f9",
+        thinking_fg="#bdc7e0",
+        thinking_bg="#44475a",
+        thinking_border="#6272a4",
+        stream_fg="#f8f8f2",
+        stream_bg="#44475a",
+        feed_bg="#44475a",
+        feed_fg="#f8f8f2",
+        feed_border="#6272a4",
+        prompt_bg="#44475a",
+        prompt_fg="#f8f8f2",
+        prompt_border="#6272a4",
+        html_body_bg="#44475a",
+        html_body_fg="#f8f8f2",
+        html_rvt="#6272a4",
+        html_rva="#f8f8f2",
+        html_tool_bg="#6272a4",
+        html_tool_border="#bd93f9",
+        html_pre_fg="#e0e0f0",
+        html_meta="#6272a4",
+        html_link="#8be9fd",
+        html_notice="#ffb86c",
+        html_code_bg="#6272a4",
+    ),
+    "onedark": _AgentDockChrome(
+        root_bg="#282c34",
+        root_fg="#abb2bf",
+        activity_bg="#2c323c",
+        activity_border="#3e4451",
+        muted="#6b7280",
+        thinking_fg="#9da5b4",
+        thinking_bg="#21252b",
+        thinking_border="#3e4451",
+        stream_fg="#abb2bf",
+        stream_bg="#2c323c",
+        feed_bg="#3e4451",
+        feed_fg="#abb2bf",
+        feed_border="#181a1f",
+        prompt_bg="#3e4451",
+        prompt_fg="#abb2bf",
+        prompt_border="#181a1f",
+        html_body_bg="#3e4451",
+        html_body_fg="#abb2bf",
+        html_rvt="#5c6370",
+        html_rva="#c8ccd4",
+        html_tool_bg="#2c323c",
+        html_tool_border="#61afef",
+        html_pre_fg="#abb2bf",
+        html_meta="#5c6370",
+        html_link="#61afef",
+        html_notice="#e5c07b",
+        html_code_bg="#2c323c",
+    ),
+    "solarized_dark": _AgentDockChrome(
+        root_bg="#002b36",
+        root_fg="#839496",
+        activity_bg="#073642",
+        activity_border="#586e75",
+        muted="#93a1a1",
+        thinking_fg="#93a1a1",
+        thinking_bg="#073642",
+        thinking_border="#586e75",
+        stream_fg="#839496",
+        stream_bg="#073642",
+        feed_bg="#073642",
+        feed_fg="#839496",
+        feed_border="#586e75",
+        prompt_bg="#073642",
+        prompt_fg="#839496",
+        prompt_border="#586e75",
+        html_body_bg="#073642",
+        html_body_fg="#839496",
+        html_rvt="#586e75",
+        html_rva="#eee8d5",
+        html_tool_bg="#094656",
+        html_tool_border="#268bd2",
+        html_pre_fg="#93a1a1",
+        html_meta="#586e75",
+        html_link="#268bd2",
+        html_notice="#b58900",
+        html_code_bg="#094656",
+    ),
+    "kanagawa": _AgentDockChrome(
+        root_bg="#1f1f28",
+        root_fg="#dcd7ba",
+        activity_bg="#2a2a37",
+        activity_border="#54546d",
+        muted="#9cabca",
+        thinking_fg="#a4a09f",
+        thinking_bg="#16161d",
+        thinking_border="#54546d",
+        stream_fg="#dcd7ba",
+        stream_bg="#2a2a37",
+        feed_bg="#2a2a37",
+        feed_fg="#dcd7ba",
+        feed_border="#54546d",
+        prompt_bg="#2a2a37",
+        prompt_fg="#dcd7ba",
+        prompt_border="#54546d",
+        html_body_bg="#2a2a37",
+        html_body_fg="#dcd7ba",
+        html_rvt="#727169",
+        html_rva="#dcd7ba",
+        html_tool_bg="#363646",
+        html_tool_border="#7e9cd8",
+        html_pre_fg="#c8c093",
+        html_meta="#727169",
+        html_link="#7e9cd8",
+        html_notice="#e6c384",
+        html_code_bg="#363646",
+    ),
+    "light": _AgentDockChrome(
+        root_bg="#f6f8fa",
+        root_fg="#24292f",
+        activity_bg="#eaeef2",
+        activity_border="#d0d7de",
+        muted="#57606a",
+        thinking_fg="#57606a",
+        thinking_bg="#ffffff",
+        thinking_border="#d0d7de",
+        stream_fg="#24292f",
+        stream_bg="#ffffff",
+        feed_bg="#ffffff",
+        feed_fg="#24292f",
+        feed_border="#d0d7de",
+        prompt_bg="#ffffff",
+        prompt_fg="#24292f",
+        prompt_border="#d0d7de",
+        html_body_bg="#ffffff",
+        html_body_fg="#24292f",
+        html_rvt="#57606a",
+        html_rva="#24292f",
+        html_tool_bg="#eaeef2",
+        html_tool_border="#0969da",
+        html_pre_fg="#24292f",
+        html_meta="#57606a",
+        html_link="#0969da",
+        html_notice="#9a6700",
+        html_code_bg="#f6f8fa",
+    ),
+}
+
+
+def agent_dock_stylesheet(theme_id: str) -> str:
+    """Qt stylesheet for the embedded Agent panel (object names on widgets in ``MainWindow``)."""
+    tid = normalize_theme_id(theme_id)
+    if tid == "system":
+        return """
+            QWidget#agent_dock_root { background-color: palette(base); color: palette(window-text); }
+            QFrame#agent_activity { background-color: palette(alternate-base); border: 1px solid palette(mid);
+                border-radius: 8px; }
+            QLabel#agent_gen_label { color: palette(mid); font-size: 10pt; }
+            QLabel#agent_live_thinking { color: palette(mid); font-family: Consolas, monospace; font-size: 9pt;
+                font-style: italic; background: palette(window); border-radius: 4px; padding: 6px;
+                border: 1px solid palette(mid); }
+            QLabel#agent_live_stream { color: palette(text); font-family: Consolas, monospace; font-size: 9.5pt;
+                background: palette(base); border-radius: 4px; padding: 6px; border: 1px solid palette(mid); }
+            QTextBrowser#agent_feed { background-color: palette(base); color: palette(text);
+                border: 1px solid palette(mid); border-radius: 6px; }
+            QTextEdit#agent_prompt { background-color: palette(base); color: palette(text);
+                border: 1px solid palette(mid); border-radius: 6px; padding: 4px; }
+        """
+    c = _AGENT_DOCK_CHROME.get(tid) or _AGENT_DOCK_CHROME["tokyo_night"]
+    return f"""
+        QWidget#agent_dock_root {{ background-color: {c.root_bg}; color: {c.root_fg}; }}
+        QFrame#agent_activity {{ background-color: {c.activity_bg}; border: 1px solid {c.activity_border}; border-radius: 8px; }}
+        QLabel#agent_gen_label {{ color: {c.muted}; font-size: 10pt; }}
+        QLabel#agent_live_thinking {{
+            color: {c.thinking_fg}; font-family: Consolas, monospace; font-size: 9pt; font-style: italic;
+            background: {c.thinking_bg}; border-radius: 4px; padding: 6px; border: 1px solid {c.thinking_border};
+        }}
+        QLabel#agent_live_stream {{
+            color: {c.stream_fg}; font-family: Consolas, monospace; font-size: 9.5pt;
+            background: {c.stream_bg}; border-radius: 4px; padding: 6px; border: 1px solid {c.activity_border};
+        }}
+        QTextBrowser#agent_feed {{
+            background-color: {c.feed_bg}; color: {c.feed_fg}; border: 1px solid {c.feed_border}; border-radius: 6px;
+        }}
+        QTextEdit#agent_prompt {{
+            background-color: {c.prompt_bg}; color: {c.prompt_fg};
+            border: 1px solid {c.prompt_border}; border-radius: 6px; padding: 4px;
+        }}
+    """
+
+
+def agent_feed_document_default_stylesheet(theme_id: str) -> str:
+    """Default CSS for rich text in the Agent feed (must track ``agent_dock_stylesheet`` colors)."""
+    tid = normalize_theme_id(theme_id)
+    if tid == "system":
+        return (
+            "body{font-family:'Segoe UI',Consolas,sans-serif;font-size:10pt;}"
+            ".rvpre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:9.5pt;}"
+            "code,pre{font-family:Consolas,monospace;font-size:9.5pt;}"
+            "a.rvlink:hover{text-decoration:underline;}"
+        )
+    c = _AGENT_DOCK_CHROME.get(tid) or _AGENT_DOCK_CHROME["tokyo_night"]
+    return (
+        f"body{{font-family:'Segoe UI',Consolas,sans-serif;font-size:10pt;color:{c.html_body_fg};"
+        f"background:{c.html_body_bg};}}"
+        f".rvt{{color:{c.html_rvt};font-style:italic;}}"
+        f".rva{{color:{c.html_rva};line-height:1.45;}}"
+        f".rvtool{{background:{c.html_tool_bg};border-left:3px solid {c.html_tool_border};"
+        f"border-radius:4px;padding:8px 10px;margin:8px 0;}}"
+        f".rvtool-fold{{border-left-color:{c.html_meta};}}"
+        ".rvweb .rvweb-primary{margin-top:6px;word-break:break-all;}"
+        f".rvpre{{white-space:pre-wrap;font-family:Consolas,monospace;font-size:9.5pt;color:{c.html_pre_fg};}}"
+        f".rvmeta{{color:{c.html_meta};font-size:9pt;}}"
+        f".rvlink{{color:{c.html_link};text-decoration:none;}}"
+        f".rvnotice{{color:{c.html_notice};font-size:9.5pt;padding:4px 0;}}"
+        "a.rvlink:hover{text-decoration:underline;}"
+        f"code{{font-family:Consolas,monospace;background:{c.html_code_bg};padding:1px 4px;"
+        f"border-radius:3px;font-size:9.5pt;}}"
+        f"pre{{background:{c.html_code_bg};border-radius:4px;padding:6px;}}"
+    )
 
 
 def apply_application_style(app: QApplication, theme_id: str) -> None:

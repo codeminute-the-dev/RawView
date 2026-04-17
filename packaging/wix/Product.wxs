@@ -5,7 +5,7 @@
     Per-user MSI. Heat (_Harvest.wxs) emits new component GUIDs each build; UpgradeCode
     stays fixed. MajorUpgrade removes the prior product early so a newer MSI installs
     cleanly (update in place). scripts/build-msi.ps1 passes -dProductVersion from
-    pyproject.toml — bump the release version there so upgrades are detected (WiX uses
+    pyproject.toml: bump the release version there so upgrades are detected (WiX uses
     the first three version fields for comparison; the fourth is ignored by Windows Installer).
   -->
   <Product

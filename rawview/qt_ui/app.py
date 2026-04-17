@@ -30,18 +30,18 @@ def _center_on_screen(app: QApplication, widget) -> None:
     widget.move(geo.x() + (geo.width() - w) // 2, geo.y() + (geo.height() - h) // 2)
 
 
-def run_qt_app() -> int:
+def run_qt_app(*, no_agent: bool = False) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("RawView")
     app.setOrganizationName("RawView")
     apply_window_icon_to_app(app)
 
-    splash = BootSplash()
+    splash = BootSplash(no_agent=no_agent)
     splash.show()
     _center_on_screen(app, splash)
     app.processEvents()
 
-    win = MainWindow()
+    win = MainWindow(no_agent=no_agent)
     win.hide()
 
     splash._boot_mode = "initial"  # type: ignore[attr-defined]
@@ -99,7 +99,7 @@ def run_qt_app() -> int:
             from rawview.qt_ui.spotlight_tutorial import attach_spotlight_tutorial
 
             if not is_tutorial_complete():
-                o = attach_spotlight_tutorial(win, mark_complete=True)
+                o = attach_spotlight_tutorial(win, mark_complete=True, no_agent=getattr(win, "_no_agent", False))
                 win._spotlight_overlay = o
                 o.finished.connect(win._clear_spotlight_overlay)
 

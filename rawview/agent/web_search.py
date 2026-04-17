@@ -82,7 +82,7 @@ def fetch_url_text(url: str, *, max_bytes: int = _FETCH_PAGE_BYTES) -> str:
         headers={"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"},
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:  # noqa: S310 — validated URL
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:  # noqa: S310: validated URL
         raw = resp.read(max_bytes + 1)
     if len(raw) > max_bytes:
         raw = raw[:max_bytes]

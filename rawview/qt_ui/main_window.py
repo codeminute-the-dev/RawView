@@ -60,7 +60,13 @@ from rawview.qt_ui.controller import RawViewQtController
 from rawview.qt_ui.hex_view import HexViewPanel
 from rawview.qt_ui.highlighter import PseudocodeHighlighter
 from rawview.qt_ui.shortcuts import ShortcutController, effective_sequence, load_shortcut_map
-from rawview.qt_ui.themes import apply_application_style, main_window_stylesheet, pseudocode_palette
+from rawview.qt_ui.themes import (
+    agent_dock_stylesheet,
+    agent_feed_document_default_stylesheet,
+    apply_application_style,
+    main_window_stylesheet,
+    pseudocode_palette,
+)
 from rawview.qt_ui.branding import load_app_icon
 from rawview.qt_ui.work_dock import WorkDockPanel
 
@@ -70,22 +76,24 @@ _UI_STATE_VERSION = 2
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, no_agent: bool = False) -> None:
         super().__init__()
-        self.setWindowTitle("RawView")
+        self._no_agent = bool(no_agent)
+        self.setWindowTitle("RawView RE" if self._no_agent else "RawView")
         _ic = load_app_icon()
         if not _ic.isNull():
             self.setWindowIcon(_ic)
         self.resize(1400, 900)
         self._did_show_reconcile = False
 
-        self._ctrl = RawViewQtController()
+        self._ctrl = RawViewQtController(no_agent=self._no_agent)
         self._ui_settings = QSettings(str(user_data_dir() / "ui_state.ini"), QSettings.Format.IniFormat)
         self._save_ui_timer = QTimer(self)
         self._save_ui_timer.setSingleShot(True)
         self._save_ui_timer.setInterval(450)
         self._save_ui_timer.timeout.connect(self._persist_ui_layout)
         self._ph: PseudocodeHighlighter | None = None
+        self._agent_dock_root: QWidget | None = None
         self._shortcut_controller = ShortcutController(self, self._ui_settings)
         self._spotlight_overlay: QWidget | None = None
         self._agent_feed_html_chunks: list[str] = []
@@ -107,7 +115,11 @@ class MainWindow(QMainWindow):
         self._build_menu()
 
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Ready: manual RE; agent optional (configure ANTHROPIC_API_KEY).")
+        self.statusBar().showMessage(
+            "Ready: Ghidra manual RE - use Cursor chat beside this app for AI help (no in-app agent in this build)."
+            if self._no_agent
+            else "Ready: manual RE; agent optional (configure ANTHROPIC_API_KEY)."
+        )
         self._tip_label = QLabel("")
         self._tip_label.setStyleSheet("color: #e0af68; padding-left: 12px; max-width: 520px;")
         self._analysis_ui_active = False
@@ -135,27 +147,23 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self._apply_default_visible_tabs()
         QTimer.singleShot(0, self._apply_default_visible_tabs)
-        self._populate_saved_chats_combo()
+        if not self._no_agent:
+            self._populate_saved_chats_combo()
+
+    def _main_docks(self) -> tuple[QDockWidget, ...]:
+        if self._no_agent:
+            return (self._dock_file, self._dock_functions, self._dock_work, self._dock_tools)
+        return (self._dock_file, self._dock_functions, self._dock_agent, self._dock_work, self._dock_tools)
 
     def _setup_agent_feed_html(self) -> None:
+        if self._no_agent:
+            return
         doc = self._agent_feed.document()
-        doc.setDefaultStyleSheet(
-            "body{font-family:'Segoe UI',Consolas,sans-serif;font-size:10pt;color:#c8ccd8;background:#16161e;}"
-            ".rvt{color:#8b92a8;font-style:italic;}"
-            ".rva{color:#d8dbe6;line-height:1.45;}"
-            ".rvtool{background:#1e2130;border-left:3px solid #5b7aa8;border-radius:4px;padding:8px 10px;margin:8px 0;}"
-            ".rvtool-fold{border-left-color:#4a5570;}"
-            ".rvweb .rvweb-primary{margin-top:6px;word-break:break-all;}"
-            ".rvpre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:9.5pt;color:#b8bfd4;}"
-            ".rvmeta{color:#6b7080;font-size:9pt;}"
-            ".rvlink{color:#8eb8e5;text-decoration:none;}"
-            ".rvnotice{color:#c9b87a;font-size:9.5pt;padding:4px 0;}"
-            "a.rvlink:hover{text-decoration:underline;}"
-            "code{font-family:Consolas,monospace;background:#252836;padding:1px 4px;border-radius:3px;font-size:9.5pt;}"
-            "pre{background:#252836;border-radius:4px;padding:6px;}"
-        )
+        doc.setDefaultStyleSheet(agent_feed_document_default_stylesheet(self._ctrl.settings.rawview_theme))
 
     def _clear_agent_feed(self) -> None:
+        if self._no_agent:
+            return
         self._agent_gen_dots_timer.stop()
         if self._agent_gen_opacity_anim is not None:
             self._agent_gen_opacity_anim.stop()
@@ -176,15 +184,21 @@ class MainWindow(QMainWindow):
         self._setup_agent_feed_html()
 
     def _append_agent_html(self, fragment: str) -> None:
+        if self._no_agent:
+            return
         self._agent_feed.moveCursor(QTextCursor.MoveOperation.End)
         self._agent_feed.insertHtml(fragment + "<br/>")
         self._agent_feed.moveCursor(QTextCursor.MoveOperation.End)
 
     def _append_feed_html(self, fragment: str) -> None:
+        if self._no_agent:
+            return
         self._append_agent_html(fragment)
         self._agent_feed_html_chunks.append(fragment)
 
     def _replay_feed_html_chunks(self, chunks: list[str], *, preserve_scroll: bool = False) -> None:
+        if self._no_agent:
+            return
         bar = self._agent_feed.verticalScrollBar()
         prev = bar.value() if preserve_scroll else None
         self._agent_feed.clear()
@@ -318,13 +332,21 @@ class MainWindow(QMainWindow):
         sc.register("decompiler_tab", lambda: self._tabs.setCurrentWidget(self._decompiler))
         sc.register("disasm_tab", lambda: self._tabs.setCurrentWidget(self._disasm))
         sc.register("hex_tab", lambda: self._tabs.setCurrentWidget(self._hex_panel))
-        sc.register("focus_agent_prompt", lambda: (self._dock_agent.show(), self._dock_agent.raise_(), self._agent_prompt.setFocus()))
-        sc.register("run_agent", self._send_agent)
-        sc.register("stop_agent", self._ctrl.interrupt_agent)
+        if not self._no_agent:
+            sc.register(
+                "focus_agent_prompt",
+                lambda: (
+                    self._dock_agent.show(),  # type: ignore[union-attr]
+                    self._dock_agent.raise_(),  # type: ignore[union-attr]
+                    self._agent_prompt.setFocus(),
+                ),
+            )
+            sc.register("run_agent", self._send_agent)
+            sc.register("stop_agent", self._ctrl.interrupt_agent)
+            sc.register("toggle_agent_dock", lambda: self._toggle_dock(self._dock_agent))  # type: ignore[arg-type]
         sc.register("run_auto_analysis", self._on_run_auto_analysis)
         sc.register("toggle_file_dock", lambda: self._toggle_dock(self._dock_file))
         sc.register("toggle_work_dock", lambda: self._toggle_dock(self._dock_work))
-        sc.register("toggle_agent_dock", lambda: self._toggle_dock(self._dock_agent))
         self._sync_menu_action_shortcuts()
         sc.apply()
 
@@ -417,6 +439,27 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("Project / binary"))
         fl.addWidget(self._path_edit)
         fl.addLayout(row)
+        fl.addWidget(QLabel("Batch analysis"))
+        self._batch_list = QListWidget()
+        self._batch_list.setMaximumHeight(100)
+        self._batch_list.setToolTip(
+            "Queued binaries. Bold row: next for Open next. Double-click a row to open that file in Ghidra."
+        )
+        self._batch_list.itemDoubleClicked.connect(self._on_batch_item_double_clicked)
+        batch_row = QHBoxLayout()
+        btn_batch = QPushButton("Batch…")
+        btn_batch.setToolTip("Select multiple binaries to queue (Ghidra loads one at a time).")
+        btn_batch.clicked.connect(self._browse_batch_analysis)
+        btn_batch_next = QPushButton("Open next")
+        btn_batch_next.setToolTip("Import the next queued file (advances the queue on success).")
+        btn_batch_next.clicked.connect(self._ctrl.open_analysis_batch_next)
+        btn_batch_clear = QPushButton("Clear batch")
+        btn_batch_clear.clicked.connect(self._clear_analysis_batch)
+        batch_row.addWidget(btn_batch)
+        batch_row.addWidget(btn_batch_next)
+        batch_row.addWidget(btn_batch_clear)
+        fl.addLayout(batch_row)
+        fl.addWidget(self._batch_list)
         self._dock_file = QDockWidget("File", self)
         self._dock_file.setObjectName("dock_file")
         self._dock_file.setWidget(file_w)
@@ -440,9 +483,50 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self._dock_file, self._dock_functions)
         self._dock_file.raise_()
 
-        # Agent dock (optional)
+        self._dock_agent: QDockWidget | None = None
+        if not self._no_agent:
+            self._build_agent_dock_inner()
+
+        self._work_panel = WorkDockPanel()
+        self._dock_work = QDockWidget("Work", self)
+        self._dock_work.setObjectName("dock_work")
+        self._dock_work.setWidget(self._work_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_work)
+        if self._dock_agent is not None:
+            self.tabifyDockWidget(self._dock_agent, self._dock_work)
+            self._dock_agent.raise_()
+        else:
+            self._dock_work.raise_()
+
+        # Bottom: rename + comment quick actions
+        tools = QWidget()
+        tl = QHBoxLayout(tools)
+        self._addr_edit = QLineEdit()
+        self._addr_edit.setPlaceholderText("Address")
+        self._rename_edit = QLineEdit()
+        self._rename_edit.setPlaceholderText("New function name")
+        btn_re = QPushButton("Rename function")
+        btn_re.clicked.connect(self._do_rename)
+        self._comment_edit = QLineEdit()
+        self._comment_edit.setPlaceholderText("EOL comment text")
+        btn_co = QPushButton("Set comment")
+        btn_co.clicked.connect(self._do_comment)
+        tl.addWidget(QLabel("Addr"))
+        tl.addWidget(self._addr_edit)
+        tl.addWidget(self._rename_edit)
+        tl.addWidget(btn_re)
+        tl.addWidget(self._comment_edit)
+        tl.addWidget(btn_co)
+        self._dock_tools = QDockWidget("Annotations", self)
+        self._dock_tools.setObjectName("dock_annotations")
+        self._dock_tools.setWidget(tools)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._dock_tools)
+
+    def _build_agent_dock_inner(self) -> None:
+        """Anthropic agent dock (omitted in RawView RE / --no-agent builds)."""
         agent = QWidget()
-        agent.setStyleSheet("background-color: #16161e;")
+        agent.setObjectName("agent_dock_root")
+        self._agent_dock_root = agent
         al = QVBoxLayout(agent)
         self._agent_activity = QFrame()
         self._agent_activity.setObjectName("agent_activity")
@@ -450,50 +534,37 @@ class MainWindow(QMainWindow):
         act_outer = QVBoxLayout(self._agent_activity)
         act_outer.setContentsMargins(8, 6, 8, 6)
         self._agent_gen_label = QLabel("")
-        self._agent_gen_label.setStyleSheet("color: #aab6d6; font-size: 10pt;")
+        self._agent_gen_label.setObjectName("agent_gen_label")
         self._agent_live_thinking = QLabel("")
+        self._agent_live_thinking.setObjectName("agent_live_thinking")
         self._agent_live_thinking.setWordWrap(True)
         self._agent_live_thinking.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._agent_live_thinking.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         self._agent_live_thinking.setMaximumHeight(140)
         self._agent_live_thinking.setVisible(False)
-        self._agent_live_thinking.setStyleSheet(
-            "color: #9aa7b8; font-family: Consolas, monospace; font-size: 9pt; font-style: italic; "
-            "background: #171923; border-radius: 4px; padding: 6px; border: 1px solid #3d4358;"
-        )
         self._agent_live_stream = QLabel("")
+        self._agent_live_stream.setObjectName("agent_live_stream")
         self._agent_live_stream.setWordWrap(True)
         self._agent_live_stream.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._agent_live_stream.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         self._agent_live_stream.setMaximumHeight(160)
-        self._agent_live_stream.setStyleSheet(
-            "color: #d0d5e0; font-family: Consolas, monospace; font-size: 9.5pt; "
-            "background: #1b1d28; border-radius: 4px; padding: 6px;"
-        )
         act_outer.addWidget(self._agent_gen_label)
         act_outer.addWidget(self._agent_live_thinking)
         act_outer.addWidget(self._agent_live_stream)
-        self._agent_activity.setStyleSheet(
-            "QFrame#agent_activity { background-color: #1f212d; border: 1px solid #3a3f55; border-radius: 8px; }"
-        )
         al.addWidget(self._agent_activity)
         self._agent_feed = QTextBrowser()
+        self._agent_feed.setObjectName("agent_feed")
         self._agent_feed.setReadOnly(True)
         self._agent_feed.setOpenLinks(False)
         self._agent_feed.setOpenExternalLinks(False)
         self._agent_feed.anchorClicked.connect(self._on_agent_feed_anchor)
         self._agent_feed.setPlaceholderText("Agent activity (tools, results) streams here when enabled.")
-        self._agent_feed.setStyleSheet(
-            "QTextBrowser { background-color: #16161e; color: #c8ccd8; border: 1px solid #2c2f3d; border-radius: 6px; }"
-        )
         self._agent_prompt = QTextEdit()
+        self._agent_prompt.setObjectName("agent_prompt")
         self._agent_prompt.setPlaceholderText(
             "Ask the agent… Type /summarize to compress chat history when it grows. (ANTHROPIC_API_KEY required)"
         )
         self._agent_prompt.setMaximumHeight(100)
-        self._agent_prompt.setStyleSheet(
-            "QTextEdit { background-color: #1e2130; color: #d8dbe6; border: 1px solid #2c2f3d; border-radius: 6px; padding: 4px; }"
-        )
         row_head = QHBoxLayout()
         row_head.addWidget(QLabel("Agent (optional)"))
         self._btn_new_chat = QPushButton("New chat")
@@ -527,48 +598,14 @@ class MainWindow(QMainWindow):
         self._wire_agent_activity_animation()
         self._wire_agent_send_button_pulse()
 
-        self._work_panel = WorkDockPanel()
-        self._dock_work = QDockWidget("Work", self)
-        self._dock_work.setObjectName("dock_work")
-        self._dock_work.setWidget(self._work_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_work)
-        self.tabifyDockWidget(self._dock_agent, self._dock_work)
-        self._dock_agent.raise_()
-
-        # Bottom: rename + comment quick actions
-        tools = QWidget()
-        tl = QHBoxLayout(tools)
-        self._addr_edit = QLineEdit()
-        self._addr_edit.setPlaceholderText("Address")
-        self._rename_edit = QLineEdit()
-        self._rename_edit.setPlaceholderText("New function name")
-        btn_re = QPushButton("Rename function")
-        btn_re.clicked.connect(self._do_rename)
-        self._comment_edit = QLineEdit()
-        self._comment_edit.setPlaceholderText("EOL comment text")
-        btn_co = QPushButton("Set comment")
-        btn_co.clicked.connect(self._do_comment)
-        tl.addWidget(QLabel("Addr"))
-        tl.addWidget(self._addr_edit)
-        tl.addWidget(self._rename_edit)
-        tl.addWidget(btn_re)
-        tl.addWidget(self._comment_edit)
-        tl.addWidget(btn_co)
-        self._dock_tools = QDockWidget("Annotations", self)
-        self._dock_tools.setObjectName("dock_annotations")
-        self._dock_tools.setWidget(tools)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._dock_tools)
+    def _apply_agent_dock_styles(self) -> None:
+        if self._no_agent or self._agent_dock_root is None:
+            return
+        self._agent_dock_root.setStyleSheet(agent_dock_stylesheet(self._ctrl.settings.rawview_theme))
 
     def _install_layout_save_event_filters(self) -> None:
         """Dock splitter drags resize children without resizing the top-level window; watch those too."""
-        self._layout_watch: tuple[QObject, ...] = (
-            self._tabs,
-            self._dock_file,
-            self._dock_functions,
-            self._dock_agent,
-            self._dock_work,
-            self._dock_tools,
-        )
+        self._layout_watch: tuple[QObject, ...] = (self._tabs, *self._main_docks())
         for w in self._layout_watch:
             w.installEventFilter(self)
 
@@ -581,7 +618,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _wire_layout_autosave(self) -> None:
-        for dock in (self._dock_file, self._dock_functions, self._dock_agent, self._dock_work, self._dock_tools):
+        for dock in self._main_docks():
             dock.visibilityChanged.connect(lambda _v: self._save_ui_timer.start())
 
     def _restore_ui_layout(self) -> None:
@@ -648,13 +685,7 @@ class MainWindow(QMainWindow):
 
     def _reapply_default_dock_layout(self) -> None:
         """Rebuild dock placement like startup when saved splitter/dock sizes are unusable on this display."""
-        docks = (
-            self._dock_file,
-            self._dock_functions,
-            self._dock_agent,
-            self._dock_work,
-            self._dock_tools,
-        )
+        docks = self._main_docks()
         for d in docks:
             self.removeDockWidget(d)
             d.setFloating(False)
@@ -662,28 +693,29 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock_functions)
         self.tabifyDockWidget(self._dock_file, self._dock_functions)
         self._dock_file.raise_()
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_agent)
+        if self._dock_agent is not None:
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_agent)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_work)
-        self.tabifyDockWidget(self._dock_agent, self._dock_work)
-        self._dock_agent.raise_()
+        if self._dock_agent is not None:
+            self.tabifyDockWidget(self._dock_agent, self._dock_work)
+            self._dock_agent.raise_()
+        else:
+            self._dock_work.raise_()
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._dock_tools)
         self._apply_default_visible_tabs()
 
     def _apply_default_visible_tabs(self) -> None:
         """Saved windowstate can hide every dock or leave them floating off-screen - then only the center strip
         looks like 'no tabs'. Show core docks again, dock them to the main window, Decompiler on top, then File/Agent."""
-        for dock in (
-            self._dock_file,
-            self._dock_functions,
-            self._dock_agent,
-            self._dock_work,
-            self._dock_tools,
-        ):
+        for dock in self._main_docks():
             dock.setFloating(False)
             dock.setVisible(True)
         self._tabs.setCurrentWidget(self._decompiler)
         self._dock_file.raise_()
-        self._dock_agent.raise_()
+        if self._dock_agent is not None:
+            self._dock_agent.raise_()
+        else:
+            self._dock_work.raise_()
 
     def _reconcile_window_with_screen(self) -> None:
         """Clamp window to the work area; only erase saved dock layout when minimum size cannot fit the screen.
@@ -743,6 +775,7 @@ class MainWindow(QMainWindow):
         if isinstance(app, QApplication):
             apply_application_style(app, self._ctrl.settings.rawview_theme)
         self.setStyleSheet(main_window_stylesheet(self._ctrl.settings.rawview_theme))
+        self._apply_agent_dock_styles()
         if self._ph is not None:
             self._ph.setDocument(None)
             self._ph.deleteLater()
@@ -771,6 +804,8 @@ class MainWindow(QMainWindow):
         self._save_ui_timer.start()
 
     def _apply_agent_availability(self) -> None:
+        if self._no_agent or self._dock_agent is None:
+            return
         has = self._ctrl.has_anthropic_key()
         self._dock_agent.setEnabled(True)
         self._agent_prompt.setEnabled(has)
@@ -788,6 +823,10 @@ class MainWindow(QMainWindow):
         self._act_open = QAction("Open binary...", self)
         self._act_open.triggered.connect(self._browse_open)
         m_file.addAction(self._act_open)
+        self._act_batch = QAction("Batch analysis…", self)
+        self._act_batch.setToolTip("Select multiple binaries to queue for sequential analysis in Ghidra.")
+        self._act_batch.triggered.connect(self._browse_batch_analysis)
+        m_file.addAction(self._act_batch)
         self._act_save_re = QAction("Save RE session…", self)
         self._act_save_re.setToolTip(
             "Export the current Ghidra project (names, comments, analysis) to a .rvre.zip file. "
@@ -811,7 +850,7 @@ class MainWindow(QMainWindow):
         m_view = self.menuBar().addMenu("&View")
 
         m_panels = m_view.addMenu("Side panels")
-        for dock in (self._dock_file, self._dock_functions, self._dock_agent, self._dock_work, self._dock_tools):
+        for dock in self._main_docks():
             m_panels.addAction(dock.toggleViewAction())
 
         act_restore = QAction("Restore all panels", self)
@@ -986,16 +1025,18 @@ class MainWindow(QMainWindow):
             lambda rows: self._fill_table(self._xrefs_table, rows, ["fromAddress", "toAddress", "type"])
         )
         c.current_address_changed.connect(self._addr_edit.setText)
-        c.agent_event.connect(self._on_agent_event)
+        if not self._no_agent:
+            c.agent_event.connect(self._on_agent_event)
         c.log_line.connect(self._append_log)
         c.ghidra_task_failed.connect(self._toast_error)
         c.program_changed.connect(self._on_program)
+        c.analysis_batch_changed.connect(self._refresh_analysis_batch_list)
         c.session_restore_hints.connect(self._apply_re_session_ui_hints)
         c.cfg_graph_updated.connect(self._cfg.load_cfg_json)
 
     def _restore_all_panels(self) -> None:
         """Re-show dock widgets after the user closes them from the title bar."""
-        for dock in (self._dock_file, self._dock_functions, self._dock_agent, self._dock_work, self._dock_tools):
+        for dock in self._main_docks():
             dock.setVisible(True)
         self._dock_file.raise_()
         self.statusBar().showMessage("All side panels restored.", 4000)
@@ -1010,10 +1051,11 @@ class MainWindow(QMainWindow):
     def _on_program(self, name: str) -> None:
         self._program_loaded = bool(name)
         self._act_save_re.setEnabled(bool(name))
+        base = "RawView RE" if self._no_agent else "RawView"
         if name:
-            self.setWindowTitle(f"RawView - {name}")
+            self.setWindowTitle(f"{base} - {name}")
         else:
-            self.setWindowTitle("RawView")
+            self.setWindowTitle(base)
 
     def _append_log(self, line: str) -> None:
         self.statusBar().showMessage(line, 8000)
@@ -1029,7 +1071,8 @@ class MainWindow(QMainWindow):
         self._apply_agent_availability()
         self._sync_menu_action_shortcuts()
         self._shortcut_controller.apply()
-        self._populate_saved_chats_combo()
+        if not self._no_agent:
+            self._populate_saved_chats_combo()
 
     def _on_show_tutorial(self) -> None:
         """Replay tour without toggling first-run completion (users can refresh anytime)."""
@@ -1040,7 +1083,9 @@ class MainWindow(QMainWindow):
             return
         from rawview.qt_ui.spotlight_tutorial import attach_spotlight_tutorial
 
-        self._spotlight_overlay = attach_spotlight_tutorial(self, mark_complete=mark_complete)
+        self._spotlight_overlay = attach_spotlight_tutorial(
+            self, mark_complete=mark_complete, no_agent=self._no_agent
+        )
         self._spotlight_overlay.finished.connect(self._clear_spotlight_overlay)
 
     def _clear_spotlight_overlay(self) -> None:
@@ -1051,15 +1096,21 @@ class MainWindow(QMainWindow):
         mb.setWindowTitle("About RawView")
         mb.setIcon(QMessageBox.Icon.Information)
         mb.setTextFormat(Qt.TextFormat.RichText)
+        agent_para = (
+            "<p><b>Optional agent:</b> with an Anthropic API key in <b>File → Settings</b>, an <b>Agent</b> dock can "
+            "call the same Ghidra bridge (decompile, rename, navigate, and more). Nothing else requires the network "
+            "or cloud services.</p>"
+            if not self._no_agent
+            else "<p><b>AI help:</b> this build omits the in-app agent. Use <b>Cursor</b> (or another assistant) "
+            "beside RawView for conversational help while you work in Ghidra panes.</p>"
+        )
         mb.setText(
             "<p style='margin-top:0'><b>RawView</b> is a native Windows desktop UI for manual reverse engineering. "
             "It connects to <b>Ghidra</b> running headlessly in the background so you can open binaries, run analysis, "
             "and work in familiar panes: decompiler, disassembly, strings, imports/exports, xrefs, and a basic CFG "
             "view - all from one window with docked tools and saved layout.</p>"
-            "<p><b>Optional agent:</b> with an Anthropic API key in <b>File → Settings</b>, an <b>Agent</b> dock can "
-            "call the same Ghidra bridge (decompile, rename, navigate, and more). Nothing else requires the network "
-            "or cloud services.</p>"
-            "<p><b>Notes &amp; data:</b> Markdown work notes, UI state, downloads, and <code>rawview.env</code> live "
+            + agent_para
+            + "<p><b>Notes &amp; data:</b> Markdown work notes, UI state, downloads, and <code>rawview.env</code> live "
             "under your user AppData RawView folder (see Settings for paths). "
             "<b>RE sessions</b> (<code>.rvre.zip</code>) save Ghidra’s database only - not Work tabs; crash recovery "
             "autosaves every few minutes under <code>re_recovery</code>.</p>"
@@ -1074,6 +1125,39 @@ class MainWindow(QMainWindow):
         if path:
             self._path_edit.setText(path)
             self._ctrl.open_binary(path)
+
+    def _browse_batch_analysis(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Batch analysis - select binaries", "", "All files (*)")
+        if not paths:
+            return
+        self._ctrl.set_analysis_batch(list(paths))
+        self._path_edit.setText(paths[0])
+
+    def _clear_analysis_batch(self) -> None:
+        self._ctrl.clear_analysis_batch()
+
+    def _refresh_analysis_batch_list(self, _payload: object = None) -> None:
+        snap = self._ctrl.analysis_batch_snapshot()
+        self._batch_list.clear()
+        for i, p in enumerate(snap["paths"]):
+            it = QListWidgetItem(Path(p).name)
+            it.setToolTip(p)
+            if i == snap["next_index"]:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            self._batch_list.addItem(it)
+
+    def _on_batch_item_double_clicked(self, item: QListWidgetItem) -> None:
+        row = self._batch_list.row(item)
+        if row < 0:
+            return
+        snap = self._ctrl.analysis_batch_snapshot()
+        paths = snap["paths"]
+        if row >= len(paths):
+            return
+        self._path_edit.setText(paths[row])
+        self._ctrl.open_analysis_batch_at(row)
 
     def _open_path(self) -> None:
         p = self._path_edit.text().strip()
@@ -1130,6 +1214,8 @@ class MainWindow(QMainWindow):
                 table.setItem(i, j, QTableWidgetItem(str(row.get(k, ""))))
 
     def _send_agent(self) -> None:
+        if self._no_agent:
+            return
         raw = self._agent_prompt.toPlainText()
         if not raw.strip():
             return
@@ -1138,6 +1224,8 @@ class MainWindow(QMainWindow):
         self._agent_prompt.clear()
 
     def _new_agent_chat(self) -> None:
+        if self._no_agent:
+            return
         msgs = self._ctrl.agent_memory.export_messages()
         if self._ctrl.agent_memory.is_nonempty() or self._agent_feed_html_chunks:
             feed_save = self._materialize_collapsed_tool_chunks(self._agent_feed_html_chunks)
@@ -1148,6 +1236,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("New agent chat started. Previous session saved under agent_chats.", 5000)
 
     def _populate_saved_chats_combo(self) -> None:
+        if self._no_agent:
+            return
         self._chat_combo.blockSignals(True)
         self._chat_combo.clear()
         self._chat_combo.addItem("Current session", "")
@@ -1157,6 +1247,8 @@ class MainWindow(QMainWindow):
         self._chat_combo.blockSignals(False)
 
     def _on_saved_chat_selected(self, index: int) -> None:
+        if self._no_agent:
+            return
         if index <= 0:
             return
         raw = self._chat_combo.itemData(index)

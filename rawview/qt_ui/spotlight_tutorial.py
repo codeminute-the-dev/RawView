@@ -39,7 +39,7 @@ def _safe_widget_rect(main: QWidget, widget: QWidget | None) -> QRect:
 Step = tuple[str, str, Callable[[], QRect], Optional[Callable[[], None]]]
 
 
-def build_re_tutorial_steps(main: QWidget) -> list[Step]:
+def build_re_tutorial_steps(main: QWidget, *, no_agent: bool = False) -> list[Step]:
     """Title, HTML body, hole rect in main-window coordinates, optional pre-step hook."""
 
     def central() -> QRect:
@@ -115,13 +115,25 @@ def build_re_tutorial_steps(main: QWidget) -> list[Step]:
             show_decompiler_tab,
         ),
         (
-            "Agent (optional)",
-            "<p>The <b>Agent</b> dock runs an Anthropic tool-using assistant. It can call Ghidra through "
-            "the same bridge as the UI: decompile, navigate, rename, search, and more.</p>"
-            "<p>You need an API key in <b>File &gt; Settings</b>. The agent shows tool calls and replies in the feed. "
-            "It is optional; everything else works offline.</p>",
-            dock_agent,
-            raise_agent,
+            (
+                "AI help (Cursor)",
+                "<p>This build has <b>no in-app Anthropic agent</b>. Use <b>Cursor chat</b> (or another assistant) "
+                "with this project open: you describe goals, the assistant suggests steps, and you drive Ghidra "
+                "from RawView’s docks and tabs.</p>"
+                "<p>RawView stays the single window for decompile, listing, strings, xrefs, and RE session save/load.</p>",
+                dock_work,
+                raise_work,
+            )
+            if no_agent
+            else (
+                "Agent (optional)",
+                "<p>The <b>Agent</b> dock runs an Anthropic tool-using assistant. It can call Ghidra through "
+                "the same bridge as the UI: decompile, navigate, rename, search, and more.</p>"
+                "<p>You need an API key in <b>File &gt; Settings</b>. The agent shows tool calls and replies in the feed. "
+                "It is optional; everything else works offline.</p>",
+                dock_agent,
+                raise_agent,
+            )
         ),
         (
             "Work notes",
@@ -143,7 +155,12 @@ def build_re_tutorial_steps(main: QWidget) -> list[Step]:
             "You are set",
             "<p>Tip: use <b>View</b> in the menu bar if a dock is closed. Use <b>View &gt; Show tutorial</b> or "
             "<b>Help &gt; Interactive tutorial</b> to replay this tour.</p>"
-            "<p>For the agent, set <b>ANTHROPIC_API_KEY</b> in Settings when you are ready.</p>",
+            + (
+                "<p>Open <b>Cursor</b> (or your editor’s AI) beside this window when you want conversational help; "
+                "this RawView build has no built-in cloud agent.</p>"
+                if no_agent
+                else "<p>For the agent, set <b>ANTHROPIC_API_KEY</b> in Settings when you are ready.</p>"
+            ),
             central,
             None,
         ),
@@ -295,9 +312,11 @@ class SpotlightTutorialOverlay(QWidget):
         self.update()
 
 
-def attach_spotlight_tutorial(main_window: QWidget, *, mark_complete: bool) -> SpotlightTutorialOverlay:
+def attach_spotlight_tutorial(
+    main_window: QWidget, *, mark_complete: bool, no_agent: bool = False
+) -> SpotlightTutorialOverlay:
     """Show the RE spotlight tour. When mark_complete, first-run completion is written when the tour ends."""
-    steps = build_re_tutorial_steps(main_window)
+    steps = build_re_tutorial_steps(main_window, no_agent=no_agent)
     overlay = SpotlightTutorialOverlay(main_window, steps)
     overlay.setParent(main_window)
     overlay.setGeometry(main_window.rect())

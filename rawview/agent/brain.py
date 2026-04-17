@@ -15,12 +15,23 @@ from rawview.agent.anthropic_backoff import (
 )
 from rawview.agent.claude_model_limits import max_output_tokens_for_claude_model
 from rawview.agent.memory import ConversationMemory
-from rawview.agent.tools import anthropic_tool_list, run_tool
+from rawview.agent.tools import AgentBatchToolPort, anthropic_tool_list, run_tool
 from rawview.ghidra.api import GhidraAPI
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str, dict[str, Any]], None]
+
+
+def _tool_result_preview_cap(tool_name: str) -> int:
+    """UI preview truncation only; full tool JSON still enters conversation memory."""
+    if tool_name == "web_search":
+        return 14_000
+    if tool_name == "batch_run_tools":
+        return 16_000
+    if tool_name in ("list_functions", "get_strings", "get_imports"):
+        return 10_000
+    return 4000
 
 # Short user phrases that should always map to Ghidra auto-analysis (model often replies in prose otherwise).
 _ANALYZE_ALIASES = frozenset(
@@ -89,6 +100,7 @@ class AgentBrain:
         extended_thinking: bool = False,
         thinking_budget_tokens: int = 4096,
         temperature: float = 0.3,
+        batch_port: AgentBatchToolPort | None = None,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
@@ -97,6 +109,7 @@ class AgentBrain:
         self._max_turns = max_turns
         self._on_navigate = on_navigate
         self._emit = emit
+        self._batch_port = batch_port
         self._extended_thinking = extended_thinking
         self._thinking_budget_tokens = thinking_budget_tokens
         self._temperature = float(temperature)
@@ -240,9 +253,11 @@ You are RawView, the in-app reverse-engineering agent. You act on a live Ghidra 
 - Work in tight loops: gather evidence → interpret → decide the next smallest tool step. Prefer incremental exploration over one giant assumption.
 - After tool results, answer the user in clear prose: what you checked, what you found, and what it implies. Quote symbols or addresses from tool output when it helps.
 - If the user’s target is ambiguous (multiple matches, unclear image base, vague “the crypto function”), ask one short clarifying question instead of guessing.
+- **Batch analysis (File dock):** The user may queue several binaries in the UI. You only see that queue through **`analysis_batch_status`**, which returns **`items`**: each row has `index`, `basename`, and full `path`, plus `next_index` / `next_path`. Ghidra holds **one** program at a time.
+- When work spans multiple queued files, or the user mentions “next”, “batch”, “the queue”, or a filename from the list, call **`analysis_batch_status`** first, then **`analysis_batch_open_next`** (follow `next_index`) or **`analysis_batch_open_index`** with the chosen `index`. Prefer those over **`open_file`** alone so the batch cursor stays aligned with the UI (double-click / Open next).
 
 ## Ghidra workflow (suggested order, adapt as needed)
-- Orientation: list_functions, get_entry_points, get_imports/exports, get_strings as appropriate to map the surface.
+- Orientation: list_functions (with limit when the image is large), get_entry_points, get_imports/exports, get_strings as appropriate to map the surface.
 - Drill-down: get_xrefs_to/from, get_disassembly, decompile_function, get_data_at, search_bytes, get_control_flow_graph.
 - When you change the database (rename_function, rename_variable, set_comment, set_function_signature, create_struct), be deliberate and explain the rationale briefly to the user.
 
@@ -273,7 +288,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 - If the next step needs a value from a prior tool, did you **wait** for that `tool_result` first?
 
 ### Examples (same logical `name` + `input` you must supply)
-- List functions: `name` = `list_functions`, `input` = `{}`.
+- List functions (first window): `name` = `list_functions`, `input` = `{\"limit\": 200, \"offset\": 0}` (still valid: `input` = `{}` for full list when small).
 - Decompile: `name` = `decompile_function`, `input` = {\"address\": \"004012a0\"}.
 - Disassembly with limit: `name` = `get_disassembly`, `input` = {\"address\": \"004012a0\", \"length\": 48}.
 - You may combine independent calls in **one** assistant message (e.g. `get_imports` + `get_entry_points`, each its own `tool_use` block).
@@ -291,15 +306,18 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 
 ### Tools with no parameters (always pass `input`: `{}`)
 - **`run_auto_analysis`**: Re-run auto-analysis on the program already open in Ghidra.
-- **`list_functions`**: List defined functions and entry addresses.
-- **`get_strings`**: List defined string literals and addresses.
-- **`get_imports`**: List imported APIs/libraries.
+- **`analysis_batch_status`**: Read the File-dock batch queue (`items` has per-row `index`, `basename`, `path`; also `next_index`, `next_path`, `count`).
+- **`analysis_batch_open_next`**: Import and analyze the file at `next_index`, then advance the queue cursor (same as UI Open next).
 - **`get_exports`**: Export-like symbols for this image (may be simplified).
 - **`get_entry_points`**: Program entry symbols.
 - **`list_work_notes`**: List Markdown files in the Work dock folder.
 
 ### Tools with parameters (name, purpose, `input` keys)
-- **`open_file`**: Import a file from disk and run full analysis. `input`: `path` (string, absolute path to the binary).
+- **`list_functions`**: Function names and entry addresses. `input`: optional `limit`, `offset`, `name_contains` (see schema). Prefer a limit on large programs.
+- **`get_strings`**: String literals. `input`: optional `limit`, `offset` (see schema).
+- **`get_imports`**: Import table. `input`: optional `limit`, `offset`.
+- **`open_file`**: Import from disk; optional `run_auto_analysis` (boolean, default true). `input`: `path` (string). If false, call `run_auto_analysis` separately when ready.
+- **`analysis_batch_open_index`**: Open batch queue item by index. `input`: `index` (integer).
 - **`decompile_function`**: Decompiler output for one function. `input`: `address` (string, function entry).
 - **`get_disassembly`**: Linear instructions from an address. `input`: `address` (string); optional `length` (integer, max instructions, default if omitted).
 - **`navigate_to`**: Move the UI cursor/listing to an address. `input`: `address` (string).
@@ -322,7 +340,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 - **`user_tip`**: Short UI tip for the user. `input`: `message` (string, required); use sparingly.
 
 ### Policy reminders
-- **`open_file`**: new path on disk + full auto-analysis - not for “refresh the listing” of an already loaded program.
+- **`open_file`**: new path on disk; defaults to full auto-analysis unless `run_auto_analysis` is false. Not for “refresh the listing” of an already loaded program.
 - **`run_auto_analysis`**: only the loaded program; if the user asks to analyze/re-analyze you **must** call this or `open_file`, never only describe doing so.
 - **`navigate_to`**: UI only; does not change analysis.
 - **`user_tip`**: rare UX hints - not where normal analysis belongs.
@@ -335,7 +353,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
         if goal:
             system += f"\nPinned goal: {goal}"
 
-        tools = anthropic_tool_list(self._on_navigate)
+        tools = anthropic_tool_list(self._on_navigate, self._batch_port)
 
         for _ in range(self._max_turns):
             if self._interrupt.is_set():
@@ -452,11 +470,11 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                         result = json.dumps({"error": "interrupted_before_tool"})
                     else:
                         try:
-                            result = run_tool(name, inp, self._ghidra, self._on_navigate, self._emit)
+                            result = run_tool(name, inp, self._ghidra, self._on_navigate, self._emit, self._batch_port)
                         except Exception as e:
                             logger.exception("Tool %s failed", name)
                             result = json.dumps({"error": str(e)})
-                    cap = 14_000 if name in ("web_search", "batch_run_tools") else 4000
+                    cap = _tool_result_preview_cap(name)
                     preview = result if len(result) < cap else result[:cap] + "..."
                     self._emit("tool_result", {"id": tid, "name": name, "preview": preview})
                     blocks_out.append({"type": "tool_use", "id": tid, "name": name, "input": inp})
