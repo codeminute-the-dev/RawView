@@ -553,7 +553,7 @@ class RawViewQtController(QObject):
                 self.agent_event.emit(
                     "agent_error",
                     {
-                        "message": "Set ANTHROPIC_API_KEY in File → Settings (saved to %LOCALAPPDATA%\\RawView\\rawview.env).",
+                        "message": "Set ANTHROPIC_API_KEY in File → Settings.",
                     },
                 )
                 return
@@ -562,7 +562,7 @@ class RawViewQtController(QObject):
         if not self.has_anthropic_key():
             self.agent_event.emit(
                 "agent_error",
-                {"message": "Set ANTHROPIC_API_KEY in File → Settings (saved to %LOCALAPPDATA%\\RawView\\rawview.env)."},
+                {"message": "Set ANTHROPIC_API_KEY in File → Settings."},
             )
             return
 

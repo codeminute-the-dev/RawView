@@ -24,8 +24,9 @@ from PySide6.QtCore import (
     QUrl,
     QUrlQuery,
 )
-from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCursor, QTextDocumentFragment
+from PySide6.QtGui import QAction, QFont, QGuiApplication, QKeySequence, QShortcut, QTextCursor, QTextDocumentFragment
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDockWidget,
@@ -34,11 +35,13 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -107,6 +110,10 @@ class MainWindow(QMainWindow):
         self._btn_send_pulse_anim: QPropertyAnimation | None = None
         self._program_loaded: bool = False
         self._psutil_mod: Any = None  # lazy: False = unavailable, else the psutil module
+        self._nav_history: list[str] = []
+        self._nav_pos: int = -1
+        self._nav_jumping: bool = False
+        self._editor_font_size: int = 10
 
         self._build_central()
         self._build_docks()
@@ -139,6 +146,10 @@ class MainWindow(QMainWindow):
         self._re_autosave_timer.setInterval(300_000)  # 5 minutes - Ghidra DB + UI hints (not Work tabs)
         self._re_autosave_timer.timeout.connect(self._ctrl.tick_re_autosave)
         self._re_autosave_timer.start()
+
+        from rawview.qt_ui.discord_rpc import DiscordRichPresence
+        self._discord = DiscordRichPresence(self._ctrl.settings.discord_client_id)
+        self._discord.connect()
 
         self._connect_controller()
         self._register_shortcuts()
@@ -347,6 +358,11 @@ class MainWindow(QMainWindow):
         sc.register("run_auto_analysis", self._on_run_auto_analysis)
         sc.register("toggle_file_dock", lambda: self._toggle_dock(self._dock_file))
         sc.register("toggle_work_dock", lambda: self._toggle_dock(self._dock_work))
+        sc.register("jump_to_address", self._jump_to_address)
+        sc.register("nav_back", self._nav_back)
+        sc.register("nav_forward", self._nav_forward)
+        sc.register("font_size_up", lambda: self._change_editor_font_size(1))
+        sc.register("font_size_down", lambda: self._change_editor_font_size(-1))
         self._sync_menu_action_shortcuts()
         sc.apply()
 
@@ -386,20 +402,57 @@ class MainWindow(QMainWindow):
         self._strings_table = QTableWidget(0, 2)
         self._strings_table.setHorizontalHeaderLabels(["Address", "String"])
         self._strings_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._setup_table(self._strings_table)
+        self._strings_table.cellDoubleClicked.connect(
+            lambda r, _c: self._navigate_to_table_addr(self._strings_table, r, 0)
+        )
+        self._strings_table.customContextMenuRequested.connect(
+            lambda pos: self._show_table_context_menu(self._strings_table, pos, addr_col=0)
+        )
 
         self._imports_table = QTableWidget(0, 3)
         self._imports_table.setHorizontalHeaderLabels(["Library", "Name", "Address"])
         self._imports_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._setup_table(self._imports_table)
+        self._imports_table.cellDoubleClicked.connect(
+            lambda r, _c: self._navigate_to_table_addr(self._imports_table, r, 2)
+        )
+        self._imports_table.customContextMenuRequested.connect(
+            lambda pos: self._show_table_context_menu(self._imports_table, pos, addr_col=2)
+        )
 
         self._exports_table = QTableWidget(0, 2)
         self._exports_table.setHorizontalHeaderLabels(["Name", "Address"])
 
+        self._exports_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._setup_table(self._exports_table)
+        self._exports_table.cellDoubleClicked.connect(
+            lambda r, _c: self._navigate_to_table_addr(self._exports_table, r, 1)
+        )
+        self._exports_table.customContextMenuRequested.connect(
+            lambda pos: self._show_table_context_menu(self._exports_table, pos, addr_col=1)
+        )
+
         self._symbols_table = QTableWidget(0, 2)
         self._symbols_table.setHorizontalHeaderLabels(["Name", "Address"])
+        self._setup_table(self._symbols_table)
+        self._symbols_table.cellDoubleClicked.connect(
+            lambda r, _c: self._navigate_to_table_addr(self._symbols_table, r, 1)
+        )
+        self._symbols_table.customContextMenuRequested.connect(
+            lambda pos: self._show_table_context_menu(self._symbols_table, pos, addr_col=1)
+        )
 
         self._xrefs_table = QTableWidget(0, 3)
         self._xrefs_table.setHorizontalHeaderLabels(["From", "To", "Type"])
         self._xrefs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._setup_table(self._xrefs_table)
+        self._xrefs_table.cellDoubleClicked.connect(
+            lambda r, _c: self._navigate_to_table_addr(self._xrefs_table, r, 0)
+        )
+        self._xrefs_table.customContextMenuRequested.connect(
+            lambda pos: self._show_table_context_menu(self._xrefs_table, pos, addr_col=0)
+        )
 
         self._cfg = CfgPanel()
 
@@ -473,6 +526,8 @@ class MainWindow(QMainWindow):
         self._fn_search.textChanged.connect(self._ctrl.filter_functions)
         self._fn_list = QListWidget()
         self._fn_list.itemDoubleClicked.connect(self._on_fn_activated)
+        self._fn_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._fn_list.customContextMenuRequested.connect(self._show_fn_list_context_menu)
         fvl.addWidget(self._fn_search)
         fvl.addWidget(self._fn_list)
         self._dock_functions = QDockWidget("Functions", self)
@@ -498,9 +553,19 @@ class MainWindow(QMainWindow):
         else:
             self._dock_work.raise_()
 
-        # Bottom: rename + comment quick actions
+        # Bottom: nav history + rename + comment quick actions
         tools = QWidget()
         tl = QHBoxLayout(tools)
+        self._btn_back = QPushButton("←")
+        self._btn_back.setToolTip("Navigate back (Alt+Left)")
+        self._btn_back.setFixedWidth(28)
+        self._btn_back.setEnabled(False)
+        self._btn_back.clicked.connect(self._nav_back)
+        self._btn_fwd = QPushButton("→")
+        self._btn_fwd.setToolTip("Navigate forward (Alt+Right)")
+        self._btn_fwd.setFixedWidth(28)
+        self._btn_fwd.setEnabled(False)
+        self._btn_fwd.clicked.connect(self._nav_forward)
         self._addr_edit = QLineEdit()
         self._addr_edit.setPlaceholderText("Address")
         self._rename_edit = QLineEdit()
@@ -511,6 +576,8 @@ class MainWindow(QMainWindow):
         self._comment_edit.setPlaceholderText("EOL comment text")
         btn_co = QPushButton("Set comment")
         btn_co.clicked.connect(self._do_comment)
+        tl.addWidget(self._btn_back)
+        tl.addWidget(self._btn_fwd)
         tl.addWidget(QLabel("Addr"))
         tl.addWidget(self._addr_edit)
         tl.addWidget(self._rename_edit)
@@ -963,14 +1030,16 @@ class MainWindow(QMainWindow):
             raw = path.read_text(encoding="utf-8")
             data = json.loads(raw)
         except (OSError, json.JSONDecodeError, TypeError):
-            self._analysis_label.setText("ANALYSING: […]")
+            self._analysis_label.setText("Analyzing…")
             self._analysis_bar.setRange(0, 0)
             self._analysis_bar.setFormat("")
             return
-        msg = str(data.get("message", "") or "").strip() or "…"
-        if len(msg) > 100:
-            msg = msg[:97] + "…"
-        self._analysis_label.setText(f"ANALYSING: [{msg}]")
+        # Show the current analyzer name; fall back to message for context
+        analyzer = str(data.get("analyzer", "") or "").strip()
+        if not analyzer:
+            analyzer = str(data.get("message", "") or "").strip()
+        analyzer = (analyzer[:52] + "…") if len(analyzer) > 52 else (analyzer or "…")
+        self._analysis_label.setText(analyzer)
         indet = bool(data.get("indeterminate"))
         pct_raw = data.get("percent")
         try:
@@ -989,8 +1058,8 @@ class MainWindow(QMainWindow):
         self._analysis_ui_active = True
         self._analysis_label.setVisible(True)
         self._analysis_bar.setVisible(True)
-        self._analysis_label.setText("ANALYSING: […]")
-        self._analysis_bar.setRange(0, 0)
+        self._analysis_label.setText("Starting…")
+        self._analysis_bar.setRange(0, 0)  # bouncing indeterminate until first progress update
         self._analysis_bar.setFormat("")
         self._status_resource_timer.setInterval(200)
         try:
@@ -1003,9 +1072,8 @@ class MainWindow(QMainWindow):
         self._status_resource_timer.setInterval(750)
         self._analysis_label.setVisible(False)
         self._analysis_bar.setVisible(False)
-        self._analysis_bar.setRange(0, 100)
-        self._analysis_bar.setValue(0)
-        self._analysis_bar.setFormat("%p%")
+        self._analysis_bar.setRange(0, 0)
+        self._analysis_bar.setFormat("")
 
     def _connect_controller(self) -> None:
         c = self._ctrl
@@ -1024,7 +1092,7 @@ class MainWindow(QMainWindow):
         c.xrefs_updated.connect(
             lambda rows: self._fill_table(self._xrefs_table, rows, ["fromAddress", "toAddress", "type"])
         )
-        c.current_address_changed.connect(self._addr_edit.setText)
+        c.current_address_changed.connect(self._on_address_changed)
         if not self._no_agent:
             c.agent_event.connect(self._on_agent_event)
         c.log_line.connect(self._append_log)
@@ -1033,6 +1101,7 @@ class MainWindow(QMainWindow):
         c.analysis_batch_changed.connect(self._refresh_analysis_batch_list)
         c.session_restore_hints.connect(self._apply_re_session_ui_hints)
         c.cfg_graph_updated.connect(self._cfg.load_cfg_json)
+        self._cfg.navigate_requested.connect(self._ctrl.navigate_to_address)
 
     def _restore_all_panels(self) -> None:
         """Re-show dock widgets after the user closes them from the title bar."""
@@ -1056,6 +1125,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{base} - {name}")
         else:
             self.setWindowTitle(base)
+        self._discord.set_program(name or None)
 
     def _append_log(self, line: str) -> None:
         self.statusBar().showMessage(line, 8000)
@@ -1105,13 +1175,13 @@ class MainWindow(QMainWindow):
             "beside RawView for conversational help while you work in Ghidra panes.</p>"
         )
         mb.setText(
-            "<p style='margin-top:0'><b>RawView</b> is a native Windows desktop UI for manual reverse engineering. "
+            "<p style='margin-top:0'><b>RawView</b> is a desktop UI for manual reverse engineering. "
             "It connects to <b>Ghidra</b> running headlessly in the background so you can open binaries, run analysis, "
             "and work in familiar panes: decompiler, disassembly, strings, imports/exports, xrefs, and a basic CFG "
             "view - all from one window with docked tools and saved layout.</p>"
             + agent_para
             + "<p><b>Notes &amp; data:</b> Markdown work notes, UI state, downloads, and <code>rawview.env</code> live "
-            "under your user AppData RawView folder (see Settings for paths). "
+            "under your user data folder (see Settings for paths). "
             "<b>RE sessions</b> (<code>.rvre.zip</code>) save Ghidra’s database only - not Work tabs; crash recovery "
             "autosaves every few minutes under <code>re_recovery</code>.</p>"
         )
@@ -1198,6 +1268,8 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{addr}  {name}")
             item.setData(Qt.ItemDataRole.UserRole, r)
             self._fn_list.addItem(item)
+        count = len(rows)
+        self._dock_functions.setWindowTitle(f"Functions ({count})" if count else "Functions")
 
     def _on_fn_activated(self, item: QListWidgetItem) -> None:
         data = item.data(Qt.ItemDataRole.UserRole)
@@ -1207,11 +1279,140 @@ class MainWindow(QMainWindow):
                 self._ctrl.navigate_to_address(addr)
 
     def _fill_table(self, table: QTableWidget, rows: list[dict[str, str]], keys: list[str]) -> None:
+        was_sorting = table.isSortingEnabled()
+        table.setSortingEnabled(False)
         table.setRowCount(0)
         table.setRowCount(len(rows))
+        _ro = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         for i, row in enumerate(rows):
             for j, k in enumerate(keys):
-                table.setItem(i, j, QTableWidgetItem(str(row.get(k, ""))))
+                it = QTableWidgetItem(str(row.get(k, "")))
+                it.setFlags(_ro)
+                table.setItem(i, j, it)
+        table.setSortingEnabled(was_sorting)
+
+    # ------------------------------------------------------------------
+    # Table and list helpers
+
+    def _setup_table(self, table: QTableWidget) -> None:
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.verticalHeader().setVisible(False)
+
+    def _navigate_to_table_addr(self, table: QTableWidget, row: int, addr_col: int) -> None:
+        it = table.item(row, addr_col)
+        if it:
+            addr = it.text().strip()
+            if addr:
+                self._ctrl.navigate_to_address(addr)
+
+    def _show_table_context_menu(self, table: QTableWidget, pos, addr_col: int = -1) -> None:
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        menu = QMenu(self)
+        clicked_item = table.itemAt(pos)
+        if clicked_item:
+            preview = clicked_item.text()[:60]
+            act = menu.addAction(f"Copy: {preview}")
+            act.triggered.connect(lambda _=False, t=clicked_item.text(): QGuiApplication.clipboard().setText(t))
+        if addr_col >= 0:
+            addr_item = table.item(row, addr_col)
+            if addr_item:
+                addr = addr_item.text().strip()
+                if addr:
+                    menu.addSeparator()
+                    act_nav = menu.addAction(f"Navigate to  {addr}")
+                    act_nav.triggered.connect(lambda _=False, a=addr: self._ctrl.navigate_to_address(a))
+                    act_cp = menu.addAction(f"Copy address  {addr}")
+                    act_cp.triggered.connect(lambda _=False, a=addr: QGuiApplication.clipboard().setText(a))
+        row_parts = []
+        for col in range(table.columnCount()):
+            it = table.item(row, col)
+            if it:
+                row_parts.append(it.text())
+        if row_parts:
+            menu.addSeparator()
+            row_text = "\t".join(row_parts)
+            act_row = menu.addAction("Copy row")
+            act_row.triggered.connect(lambda _=False, rt=row_text: QGuiApplication.clipboard().setText(rt))
+        if not menu.isEmpty():
+            menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _show_fn_list_context_menu(self, pos) -> None:
+        item = self._fn_list.itemAt(pos)
+        if not item:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            return
+        addr = data.get("address", "")
+        name = data.get("name", "")
+        menu = QMenu(self)
+        if addr:
+            act_nav = menu.addAction(f"Navigate to  {addr}")
+            act_nav.triggered.connect(lambda _=False, a=addr: self._ctrl.navigate_to_address(a))
+            menu.addSeparator()
+            act_ca = menu.addAction(f"Copy address  {addr}")
+            act_ca.triggered.connect(lambda _=False, a=addr: QGuiApplication.clipboard().setText(a))
+        if name:
+            act_cn = menu.addAction(f"Copy name  {name}")
+            act_cn.triggered.connect(lambda _=False, n=name: QGuiApplication.clipboard().setText(n))
+        if not menu.isEmpty():
+            menu.exec(self._fn_list.viewport().mapToGlobal(pos))
+
+    # ------------------------------------------------------------------
+    # Address navigation history
+
+    def _on_address_changed(self, addr: str) -> None:
+        self._addr_edit.setText(addr)
+        if not self._nav_jumping and addr:
+            if self._nav_pos < len(self._nav_history) - 1:
+                self._nav_history = self._nav_history[: self._nav_pos + 1]
+            if not self._nav_history or self._nav_history[-1] != addr:
+                self._nav_history.append(addr)
+                self._nav_pos = len(self._nav_history) - 1
+        self._update_nav_buttons()
+
+    def _nav_back(self) -> None:
+        if self._nav_pos > 0:
+            self._nav_pos -= 1
+            self._nav_jumping = True
+            self._ctrl.navigate_to_address(self._nav_history[self._nav_pos])
+            self._nav_jumping = False
+            self._update_nav_buttons()
+
+    def _nav_forward(self) -> None:
+        if self._nav_pos < len(self._nav_history) - 1:
+            self._nav_pos += 1
+            self._nav_jumping = True
+            self._ctrl.navigate_to_address(self._nav_history[self._nav_pos])
+            self._nav_jumping = False
+            self._update_nav_buttons()
+
+    def _update_nav_buttons(self) -> None:
+        self._btn_back.setEnabled(self._nav_pos > 0)
+        self._btn_fwd.setEnabled(self._nav_pos < len(self._nav_history) - 1)
+
+    def _jump_to_address(self) -> None:
+        addr, ok = QInputDialog.getText(
+            self,
+            "Jump to Address",
+            "Enter address (hex):",
+            text=self._addr_edit.text().strip(),
+        )
+        if ok and addr.strip():
+            self._ctrl.navigate_to_address(addr.strip())
+
+    def _change_editor_font_size(self, delta: int) -> None:
+        self._editor_font_size = max(6, min(24, self._editor_font_size + delta))
+        f = QFont("Consolas", self._editor_font_size)
+        f.setStyleHint(QFont.StyleHint.Monospace)
+        self._decompiler.setFont(f)
+        self._disasm.setFont(f)
 
     def _send_agent(self) -> None:
         if self._no_agent:
@@ -1556,4 +1757,5 @@ class MainWindow(QMainWindow):
         self._work_panel.mark_clean_shutdown()
         self._persist_ui_layout()
         self._ctrl.shutdown_bridge()
+        self._discord.close()
         super().closeEvent(event)

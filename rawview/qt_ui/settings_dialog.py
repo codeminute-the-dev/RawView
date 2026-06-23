@@ -1,4 +1,4 @@
-"""Edit RawView settings persisted to %LOCALAPPDATA%/RawView/rawview.env."""
+"""Edit RawView settings persisted to the user data folder (rawview.env)."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet("color: palette(mid); font-size: 11px;")
         form.addRow(hint)
         form.addRow("Ghidra zip URL (optional override)", self._ghidra_url)
-        dl = QPushButton("Download & install Ghidra to AppData...")
+        dl = QPushButton("Download & install Ghidra...")
         dl.clicked.connect(self._download_ghidra)
         form.addRow("", dl)
         java_wrap = QWidget()
@@ -158,7 +158,7 @@ class SettingsDialog(QDialog):
         java_row.setContentsMargins(0, 0, 0, 0)
         java_row.addWidget(self._java, stretch=1)
         java_dl_btn = QPushButton("Download JDK...")
-        java_dl_btn.setToolTip("Download Eclipse Temurin OpenJDK 21 into AppData and set JAVA_EXECUTABLE.")
+        java_dl_btn.setToolTip("Download Eclipse Temurin OpenJDK 21 into user data folder and set JAVA_EXECUTABLE.")
         java_dl_btn.clicked.connect(self._download_java)
         java_row.addWidget(java_dl_btn)
         form.addRow("Java executable", java_wrap)
@@ -353,7 +353,7 @@ class SettingsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Download Ghidra",
-            "This downloads a large official Ghidra release zip into your AppData folder and extracts it.\n"
+            "This downloads a large official Ghidra release zip into your user data folder and extracts it.\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -386,7 +386,7 @@ class SettingsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Download JDK",
-            "This downloads Eclipse Temurin OpenJDK 21 (official Adoptium build) into your AppData folder.\n"
+            "This downloads Eclipse Temurin OpenJDK 21 (official Adoptium build) into your user data folder.\n"
             "It is used only by RawView and does not require administrator rights.\n\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

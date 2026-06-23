@@ -136,7 +136,7 @@ class BootSplash(QWidget):
         )
         self._btn_download_java = QPushButton("Download JDK")
         self._btn_download_java.setToolTip(
-            "Download Eclipse Temurin OpenJDK 21 (Adoptium) into AppData; no administrator install."
+            "Download Eclipse Temurin OpenJDK 21 (Adoptium) into user data folder; no administrator install."
         )
         self._btn_download_java.setVisible(False)
         self._btn_download = QPushButton("Download Ghidra")

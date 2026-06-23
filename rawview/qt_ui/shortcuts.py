@@ -26,6 +26,11 @@ SHORTCUT_DEFAULTS: dict[str, tuple[str, str]] = {
     "toggle_file_dock": ("Toggle File dock", "Ctrl+Shift+F"),
     "toggle_work_dock": ("Toggle Work dock", "Ctrl+Shift+W"),
     "toggle_agent_dock": ("Toggle Agent dock", "Ctrl+Shift+G"),
+    "jump_to_address": ("Jump to address", "Ctrl+G"),
+    "nav_back": ("Navigate back", "Alt+Left"),
+    "nav_forward": ("Navigate forward", "Alt+Right"),
+    "font_size_up": ("Increase editor font size", "Ctrl+="),
+    "font_size_down": ("Decrease editor font size", "Ctrl+-"),
 }
 
 

@@ -9,10 +9,17 @@ from pathlib import Path
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root))
-    os.environ.setdefault(
-        "GHIDRA_INSTALL_DIR",
-        str(Path(os.environ["LOCALAPPDATA"]) / "RawView" / "ghidra_bundle" / "ghidra_extract" / "ghidra_12.0.4_PUBLIC"),
-    )
+    if sys.platform == "win32":
+        _default_ghidra = str(
+            Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")))
+            / "RawView" / "ghidra_bundle" / "ghidra_extract" / "ghidra_12.0.4_PUBLIC"
+        )
+    else:
+        _default_ghidra = str(
+            Path(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")))
+            / "RawView" / "ghidra_bundle" / "ghidra_extract" / "ghidra_12.0.4_PUBLIC"
+        )
+    os.environ.setdefault("GHIDRA_INSTALL_DIR", _default_ghidra)
 
     from rawview.config import load_settings
     from rawview.ghidra.api import GhidraAPI
@@ -39,7 +46,8 @@ def main() -> int:
     print("starting JVM…", flush=True)
     bridge.start()
     print("ping:", api.ping(), flush=True)
-    test_bin = os.environ.get("RAWVIEW_TEST_BINARY", r"C:\Windows\System32\hostname.exe")
+    _default_bin = r"C:\Windows\System32\hostname.exe" if sys.platform == "win32" else "/bin/ls"
+    test_bin = os.environ.get("RAWVIEW_TEST_BINARY", _default_bin)
     print("open:", test_bin, flush=True)
     name = api.open_file(test_bin)
     print("program:", name, flush=True)

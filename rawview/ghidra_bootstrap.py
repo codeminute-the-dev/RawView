@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import ssl
+import stat
+import sys
 import urllib.error
 import urllib.request
 import zipfile
@@ -133,7 +136,19 @@ def download_and_extract_ghidra(
         shutil.rmtree(extract_root, ignore_errors=True)
     extract_root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_root)
+        for zi in zf.infolist():
+            zf.extract(zi, extract_root)
+            # Restore Unix execute bits (stored in upper 16 bits of external_attr).
+            # zipfile.extractall() silently drops them, so Linux native binaries
+            # (Ghidra decompiler, SLEIGH, demanglers) would be non-executable.
+            if sys.platform != "win32":
+                unix_mode = (zi.external_attr >> 16) & 0xFFFF
+                if unix_mode:
+                    dest = extract_root / zi.filename
+                    try:
+                        dest.chmod(unix_mode)
+                    except OSError:
+                        pass
     zip_path.unlink(missing_ok=True)
 
     inner = find_ghidra_root_inside_extract(extract_root)

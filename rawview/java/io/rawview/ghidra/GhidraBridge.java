@@ -15,6 +15,11 @@ import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.block.BasicBlockModel;
+import ghidra.program.model.block.CodeBlock;
+import ghidra.program.model.block.CodeBlockIterator;
+import ghidra.program.model.block.CodeBlockReference;
+import ghidra.program.model.block.CodeBlockReferenceIterator;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
@@ -35,6 +40,10 @@ import ghidra.program.model.symbol.SymbolIterator;
 import ghidra.program.util.GhidraProgramUtilities;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Py4J entry-point object: import/analyze binaries and answer listing/decompiler queries.
@@ -712,15 +721,119 @@ public class GhidraBridge {
         return "{\"kind\":\"unknown\",\"address\":\"" + escapeJson(addr.toString()) + "\"}";
     }
 
-    /** Placeholder CFG as JSON for native graph rendering. */
+    /** Real CFG using BasicBlockModel — returns nodes (basic blocks) + edges (control flow) as JSON. */
     public synchronized String getControlFlowGraphJson(String addressText) throws Exception {
         ensureProgram();
         Function f = resolveFunction(addressText);
         if (f == null) {
             return "{\"error\":\"no_function\",\"nodes\":[],\"edges\":[]}";
         }
-        return "{\"function\":\"" + escapeJson(f.getName()) + "\",\"entry\":\""
-                + escapeJson(f.getEntryPoint().toString()) + "\",\"nodes\":[],\"edges\":[],\"note\":\"MVP_placeholder\"}";
+
+        BasicBlockModel bbModel = new BasicBlockModel(program);
+        Listing listing = program.getListing();
+
+        // Collect all basic blocks within this function's address set
+        List<CodeBlock> blocks = new ArrayList<>();
+        Set<String> blockIds = new HashSet<>();
+        CodeBlockIterator blockIt = bbModel.getCodeBlocksContaining(f.getBody(), TaskMonitor.DUMMY);
+        final int MAX_BLOCKS = 256;
+        while (blockIt.hasNext() && blocks.size() < MAX_BLOCKS) {
+            CodeBlock block = blockIt.next();
+            String id = block.getMinAddress().toString();
+            if (blockIds.contains(id)) {
+                continue;
+            }
+            blockIds.add(id);
+            blocks.add(block);
+        }
+        boolean truncated = blocks.size() >= MAX_BLOCKS;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"function\":\"").append(escapeJson(f.getName()))
+          .append("\",\"entry\":\"").append(escapeJson(f.getEntryPoint().toString()))
+          .append("\",\"truncated\":").append(truncated)
+          .append(",\"nodes\":[");
+
+        final int MAX_INSNS_PER_BLOCK = 20;
+
+        for (int i = 0; i < blocks.size(); i++) {
+            CodeBlock block = blocks.get(i);
+            if (i > 0) {
+                sb.append(',');
+            }
+
+            // Count total instructions (for the "+ N more" indicator)
+            int totalInsns = 0;
+            InstructionIterator countIt = listing.getInstructions(block, true);
+            while (countIt.hasNext()) {
+                countIt.next();
+                totalInsns++;
+            }
+
+            sb.append("{\"id\":\"").append(escapeJson(block.getMinAddress().toString())).append('"')
+              .append(",\"start\":\"").append(escapeJson(block.getMinAddress().toString())).append('"')
+              .append(",\"end\":\"").append(escapeJson(block.getMaxAddress().toString())).append('"')
+              .append(",\"total_insns\":").append(totalInsns)
+              .append(",\"instructions\":[");
+
+            InstructionIterator insIt = listing.getInstructions(block, true);
+            boolean firstIns = true;
+            int insnCount = 0;
+            while (insIt.hasNext() && insnCount < MAX_INSNS_PER_BLOCK) {
+                Instruction ins = insIt.next();
+                if (!firstIns) {
+                    sb.append(',');
+                }
+                firstIns = false;
+                sb.append("{\"addr\":\"").append(escapeJson(ins.getAddressString(false, false))).append('"')
+                  .append(",\"text\":\"").append(escapeJson(ins.toString())).append("\"}");
+                insnCount++;
+            }
+            sb.append("]}");
+        }
+
+        sb.append("],\"edges\":[");
+
+        // Edges: destinations within function body only; skip call edges
+        Set<String> edgeSet = new HashSet<>();
+        boolean firstEdge = true;
+        for (CodeBlock block : blocks) {
+            CodeBlockReferenceIterator destIt = null;
+            try {
+                destIt = block.getDestinations(TaskMonitor.DUMMY);
+            } catch (Exception ignored) {
+                continue;
+            }
+            while (destIt != null && destIt.hasNext()) {
+                CodeBlockReference ref = destIt.next();
+                Address destAddr = ref.getDestinationAddress();
+                if (destAddr == null) {
+                    continue;
+                }
+                String destId = destAddr.toString();
+                if (!blockIds.contains(destId)) {
+                    continue;
+                }
+                if (ref.getFlowType() != null && ref.getFlowType().isCall()) {
+                    continue;
+                }
+                String edgeKey = block.getMinAddress().toString() + "->" + destId;
+                if (!edgeSet.add(edgeKey)) {
+                    continue;
+                }
+                String flowType = ref.getFlowType() != null ? ref.getFlowType().toString() : "FLOW";
+                if (!firstEdge) {
+                    sb.append(',');
+                }
+                firstEdge = false;
+                sb.append("{\"from\":\"").append(escapeJson(block.getMinAddress().toString())).append('"')
+                  .append(",\"to\":\"").append(escapeJson(destId)).append('"')
+                  .append(",\"type\":\"").append(escapeJson(flowType)).append("\"}");
+            }
+        }
+
+        sb.append("]}");
+        return sb.toString();
     }
 
     public synchronized String renameVariable(String functionAddress, String oldName, String newName) throws Exception {

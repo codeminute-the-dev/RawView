@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -13,7 +14,10 @@ _RAWVIEW_THEME_IDS = frozenset(_RAWVIEW_THEME_IDS_TUPLE)
 
 
 def user_data_dir() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "RawView"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "RawView"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))) / "RawView"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -118,6 +122,8 @@ class Settings(BaseSettings):
     )
 
     rawview_theme: str = Field(default="tokyo_night", validation_alias="RAWVIEW_THEME")
+
+    discord_client_id: str = Field(default="", validation_alias="DISCORD_CLIENT_ID")
 
     @field_validator("rawview_theme", mode="before")
     @classmethod

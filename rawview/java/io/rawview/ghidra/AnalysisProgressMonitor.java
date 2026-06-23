@@ -81,12 +81,14 @@ public class AnalysisProgressMonitor extends TaskMonitorAdapter {
                 sb.append(",\"indeterminate\":true");
             } else {
                 long max = getMaximum();
-                if (max <= 0) {
-                    max = 1;
-                }
                 long prog = getProgress();
-                int pct = (int) Math.min(100L, Math.max(0L, (prog * 100L) / max));
-                sb.append(",\"indeterminate\":false,\"percent\":").append(pct);
+                if (max <= 0) {
+                    // Range not yet initialized — show bouncing bar rather than a misleading 0%
+                    sb.append(",\"indeterminate\":true");
+                } else {
+                    int pct = (int) Math.min(100L, Math.max(0L, (prog * 100L) / max));
+                    sb.append(",\"indeterminate\":false,\"percent\":").append(pct);
+                }
             }
             sb.append('}');
             String json = sb.toString();

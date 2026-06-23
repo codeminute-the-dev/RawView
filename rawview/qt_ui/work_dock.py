@@ -309,7 +309,7 @@ class WorkDockPanel(QWidget):
         top.addStretch(1)
         self._hint = QLabel(
             "Close a tab (×) to remove it from the workspace - the .md file stays on disk. "
-            "Use Delete note to remove the file. Notes live under AppData\\RawView\\work; "
+            "Use Delete note to remove the file. Notes live in the RawView user data work/ folder; "
             f"crash recovery every {self.AUTOSAVE_INTERVAL_MS // 1000}s in work_recovery."
         )
         self._hint.setStyleSheet("color: #7f849c; font-size: 11px;")

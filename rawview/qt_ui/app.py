@@ -120,7 +120,7 @@ def run_qt_app(*, no_agent: bool = False) -> int:
             elif msg == "NO_JAVA":
                 splash.set_status(
                     "Ghidra is installed, but no Java runtime was found.\n"
-                    "Click Download JDK to install Eclipse Temurin 21 into AppData, or set JAVA_EXECUTABLE in Settings."
+                    "Click Download JDK to install Eclipse Temurin 21 into user data folder, or set JAVA_EXECUTABLE in Settings."
                 )
                 splash.show_boot_actions(show_java_download=True, show_ghidra_download=False)
                 splash._boot_mode = "initial"  # type: ignore[attr-defined]
@@ -144,7 +144,7 @@ def run_qt_app(*, no_agent: bool = False) -> int:
         if msg == "NO_JAVA":
             splash.set_status(
                 "No Java runtime was found (not on PATH and not bundled with Ghidra).\n"
-                "Click Download JDK to install Eclipse Temurin 21 into AppData, or set JAVA_EXECUTABLE in Settings."
+                "Click Download JDK to install Eclipse Temurin 21 into user data folder, or set JAVA_EXECUTABLE in Settings."
             )
             splash.show_boot_actions(show_java_download=True, show_ghidra_download=False)
             return

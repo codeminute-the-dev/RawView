@@ -138,7 +138,7 @@ def build_re_tutorial_steps(main: QWidget, *, no_agent: bool = False) -> list[St
         (
             "Work notes",
             "<p>The <b>Work</b> dock is for your Markdown notes: hypotheses, findings, session log.</p>"
-            "<p>Notes live under <b>AppData\\RawView\\work</b>. <b>Save notes to disk</b> writes all tabs immediately. "
+            "<p>Notes live in the <b>RawView user data work/ folder</b>. <b>Save notes to disk</b> writes all tabs immediately. "
             "A separate <b>crash recovery autosave</b> snapshots open tabs every few seconds under "
             "<b>work_recovery</b> so you can recover after a crash or power loss.</p>",
             dock_work,
