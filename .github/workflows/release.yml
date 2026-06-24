@@ -37,10 +37,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download and extract Ghidra 12.0.4
+        run: |
+          url="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.0.4_build/ghidra_12.0.4_PUBLIC_20260303.zip"
+          zip_path="$RUNNER_TEMP/ghidra.zip"
+          extract_dir="$RUNNER_TEMP/ghidra"
+          curl -L --progress-bar -o "$zip_path" "$url"
+          unzip -q "$zip_path" -d "$extract_dir"
+          inner=$(find "$extract_dir" -maxdepth 1 -type d -name "ghidra_*_PUBLIC" | head -1)
+          echo "GHIDRA_INSTALL_DIR=$inner" >> "$GITHUB_ENV"
+
       - name: Compile Java bridge
-        env:
-          GHIDRA_INSTALL_DIR: ""   # skip; bridge is compiled at runtime on first launch
-        run: echo "Skipping Java compile (downloaded at runtime)"
+        run: python -m rawview.scripts.compile_java
 
       - name: Build PyInstaller bundle
         run: bash build-linux.sh
@@ -77,6 +91,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download and extract Ghidra 12.0.4
+        run: |
+          $url = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.0.4_build/ghidra_12.0.4_PUBLIC_20260303.zip"
+          $zip = "$env:RUNNER_TEMP\ghidra.zip"
+          $dir = "$env:RUNNER_TEMP\ghidra"
+          Invoke-WebRequest $url -OutFile $zip
+          Expand-Archive $zip -DestinationPath $dir
+          $inner = Get-ChildItem $dir -Directory | Where-Object { $_.Name -like "ghidra_*_PUBLIC" } | Select-Object -First 1
+          echo "GHIDRA_INSTALL_DIR=$($inner.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      - name: Compile Java bridge
+        run: python -m rawview.scripts.compile_java
+        shell: cmd
 
       - name: Install WiX Toolset 3.14
         run: |
