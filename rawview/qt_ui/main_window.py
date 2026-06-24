@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         self._stream_start_pos = -1
         self._stream_plain_parts = []
         self._agent_generating = False
+        self._btn_send_stop.setIcon(qta.icon("fa6s.paper-plane", color="#7aa2f7"))
         self._btn_send_stop.setText("Send")
         self._thinking_indicator.clear()
         self._thinking_indicator.setVisible(False)
@@ -265,11 +266,21 @@ class MainWindow(QMainWindow):
             self._agent_tool_expand_html.pop(uid, None)
             self._replay_feed_html_chunks(new_chunks, preserve_scroll=True)
 
+    def _adjust_prompt_height(self) -> None:
+        d = self._agent_prompt.document()
+        vw = self._agent_prompt.viewport().width()
+        if vw > 0:
+            d.setTextWidth(vw)
+        h = int(d.size().height()) + 12
+        self._agent_prompt.setFixedHeight(max(34, min(h, 150)))
+
     def _set_agent_generating(self, active: bool) -> None:
         self._agent_generating = active
         if active:
-            self._btn_send_stop.setText("■ Stop")
+            self._btn_send_stop.setIcon(qta.icon("fa6s.stop", color="#f7768e"))
+            self._btn_send_stop.setText("Stop")
         else:
+            self._btn_send_stop.setIcon(qta.icon("fa6s.paper-plane", color="#7aa2f7"))
             self._btn_send_stop.setText("Send")
             self._thinking_indicator.clear()
             self._thinking_indicator.setVisible(False)
@@ -433,10 +444,14 @@ class MainWindow(QMainWindow):
         self._path_edit.setPlaceholderText("Path to binary...")
         row = QHBoxLayout()
         btn_open = QPushButton("Browse...")
+        btn_open.setIcon(qta.icon("fa6s.folder-open", color="#7aa2f7"))
         btn_open.clicked.connect(self._browse_open)
         btn_load = QPushButton("Open")
+        btn_load.setIcon(qta.icon("fa6s.file-import", color="#7aa2f7"))
         btn_load.clicked.connect(self._open_path)
-        btn_analyze = QPushButton("Run auto-analysis")
+        btn_analyze = QPushButton("Analyze")
+        btn_analyze.setIcon(qta.icon("fa6s.magnifying-glass", color="#9ece6a"))
+        btn_analyze.setToolTip("Run auto-analysis on the loaded binary")
         btn_analyze.clicked.connect(self._on_run_auto_analysis)
         row.addWidget(btn_open)
         row.addWidget(btn_load)
@@ -453,12 +468,15 @@ class MainWindow(QMainWindow):
         self._batch_list.itemDoubleClicked.connect(self._on_batch_item_double_clicked)
         batch_row = QHBoxLayout()
         btn_batch = QPushButton("Batch…")
+        btn_batch.setIcon(qta.icon("fa6s.layer-group", color="#bb9af7"))
         btn_batch.setToolTip("Select multiple binaries to queue (Ghidra loads one at a time).")
         btn_batch.clicked.connect(self._browse_batch_analysis)
         btn_batch_next = QPushButton("Open next")
+        btn_batch_next.setIcon(qta.icon("fa6s.forward-step", color="#7aa2f7"))
         btn_batch_next.setToolTip("Import the next queued file (advances the queue on success).")
         btn_batch_next.clicked.connect(self._ctrl.open_analysis_batch_next)
         btn_batch_clear = QPushButton("Clear batch")
+        btn_batch_clear.setIcon(qta.icon("fa6s.trash", color="#f7768e"))
         btn_batch_clear.clicked.connect(self._clear_analysis_batch)
         batch_row.addWidget(btn_batch)
         batch_row.addWidget(btn_batch_next)
@@ -508,12 +526,16 @@ class MainWindow(QMainWindow):
         # Bottom: nav history + rename + comment quick actions
         tools = QWidget()
         tl = QHBoxLayout(tools)
-        self._btn_back = QPushButton("←")
+        self._btn_back = QPushButton()
+        self._btn_back.setIcon(qta.icon("fa6s.arrow-left", color="#565f89"))
+        self._btn_back.setIconSize(QSize(14, 14))
         self._btn_back.setToolTip("Navigate back (Alt+Left)")
         self._btn_back.setFixedWidth(28)
         self._btn_back.setEnabled(False)
         self._btn_back.clicked.connect(self._nav_back)
-        self._btn_fwd = QPushButton("→")
+        self._btn_fwd = QPushButton()
+        self._btn_fwd.setIcon(qta.icon("fa6s.arrow-right", color="#565f89"))
+        self._btn_fwd.setIconSize(QSize(14, 14))
         self._btn_fwd.setToolTip("Navigate forward (Alt+Right)")
         self._btn_fwd.setFixedWidth(28)
         self._btn_fwd.setEnabled(False)
@@ -523,10 +545,12 @@ class MainWindow(QMainWindow):
         self._rename_edit = QLineEdit()
         self._rename_edit.setPlaceholderText("New function name")
         btn_re = QPushButton("Rename function")
+        btn_re.setIcon(qta.icon("fa6s.pen", color="#e0af68"))
         btn_re.clicked.connect(self._do_rename)
         self._comment_edit = QLineEdit()
         self._comment_edit.setPlaceholderText("EOL comment text")
         btn_co = QPushButton("Set comment")
+        btn_co.setIcon(qta.icon("fa6s.comment", color="#73daca"))
         btn_co.clicked.connect(self._do_comment)
         tl.addWidget(self._btn_back)
         tl.addWidget(self._btn_fwd)
@@ -561,6 +585,7 @@ class MainWindow(QMainWindow):
         self._chat_title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         row_head.addWidget(self._chat_title_label, stretch=1)
         self._btn_new_chat = QPushButton("New chat")
+        self._btn_new_chat.setIcon(qta.icon("fa6s.plus", color="#bb9af7"))
         self._btn_new_chat.setToolTip("Save this session to disk and start a fresh conversation.")
         self._btn_new_chat.setAutoDefault(False)
         self._btn_new_chat.clicked.connect(self._new_agent_chat)
@@ -625,14 +650,15 @@ class MainWindow(QMainWindow):
         self._agent_prompt = QTextEdit()
         self._agent_prompt.setObjectName("agent_prompt")
         self._agent_prompt.setPlaceholderText("Ask the agent… /summarize to compress history.")
-        self._agent_prompt.setMinimumHeight(34)
-        self._agent_prompt.setMaximumHeight(100)
+        self._agent_prompt.setFixedHeight(34)
         self._agent_prompt.setFrameShape(QFrame.Shape.NoFrame)
+        self._agent_prompt.document().contentsChanged.connect(self._adjust_prompt_height)
         input_frame_layout.addWidget(self._agent_prompt, stretch=1)
 
         input_row.addWidget(input_frame, stretch=1)
 
         self._btn_send_stop = QPushButton("Send")
+        self._btn_send_stop.setIcon(qta.icon("fa6s.paper-plane", color="#7aa2f7"))
         self._btn_send_stop.setObjectName("btn_send_stop")
         self._btn_send_stop.setAutoDefault(False)
         self._btn_send_stop.clicked.connect(self._on_send_stop_clicked)
@@ -832,6 +858,7 @@ class MainWindow(QMainWindow):
             self._decompiler.document(),
             palette=pseudocode_palette(self._ctrl.settings.rawview_theme),
         )
+        self._cfg.set_theme(self._ctrl.settings.rawview_theme)
         self._hex_panel.apply_theme(self._ctrl.settings.rawview_theme)
         self._setup_agent_feed_html()
 
@@ -1358,6 +1385,7 @@ class MainWindow(QMainWindow):
                 self._nav_history.append(addr)
                 self._nav_pos = len(self._nav_history) - 1
         self._update_nav_buttons()
+        self._ctrl.refresh_control_flow_graph()
 
     def _nav_back(self) -> None:
         if self._nav_pos > 0:

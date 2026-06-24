@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QRegion,
 )
 from PySide6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -24,12 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from rawview.qt_ui.branding import app_icon_png_path
-from rawview.qt_ui.themes import THEME_IDS, theme_display_name
-
-
-# Opaque panel color (matches gradient mid-stop). Transparent QLabel styles cause
-# "ghost" frames on Windows when text/layout changes over the frameless splash.
-_SPLASH_PANEL = "#1a1b26"
+from rawview.qt_ui.themes import SplashPalette, splash_palette
 
 
 def _opaque_label(w: QWidget) -> None:
@@ -38,10 +32,11 @@ def _opaque_label(w: QWidget) -> None:
 
 
 class BootSplash(QWidget):
-    theme_changed = Signal(str)  # emits theme_id when user picks a new theme
-
-    def __init__(self, *, no_agent: bool = False) -> None:
+    def __init__(self, *, no_agent: bool = False, theme_id: str = "tokyo_night") -> None:
         super().__init__()
+        self._pal: SplashPalette = splash_palette(theme_id)
+        pal = self._pal
+
         self.setFixedSize(560, 400)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -63,7 +58,7 @@ class BootSplash(QWidget):
         self._icon = QLabel()
         self._icon.setFixedSize(120, 120)
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon.setStyleSheet(f"background-color: {_SPLASH_PANEL}; border-radius: 12px;")
+        self._icon.setStyleSheet(f"background-color: {pal.panel}; border-radius: 12px;")
         _opaque_label(self._icon)
         ip = QPixmap(str(app_icon_png_path()))
         if not ip.isNull():
@@ -78,7 +73,7 @@ class BootSplash(QWidget):
         else:
             self._icon.setText("◆")
             self._icon.setStyleSheet(
-                f"color: #7aa2f7; font-size: 48px; background-color: {_SPLASH_PANEL}; border-radius: 12px;"
+                f"color: {pal.accent}; font-size: 48px; background-color: {pal.panel}; border-radius: 12px;"
             )
 
         titles = QVBoxLayout()
@@ -88,11 +83,11 @@ class BootSplash(QWidget):
         tf.setPointSize(26)
         tf.setBold(True)
         self._title.setFont(tf)
-        self._title.setStyleSheet(f"color: #c0caf5; background-color: {_SPLASH_PANEL};")
+        self._title.setStyleSheet(f"color: {pal.text}; background-color: {pal.panel};")
         _opaque_label(self._title)
 
         self._subtitle = QLabel("Reverse engineering workstation")
-        self._subtitle.setStyleSheet(f"color: #7aa2f7; font-size: 14px; background-color: {_SPLASH_PANEL};")
+        self._subtitle.setStyleSheet(f"color: {pal.accent}; font-size: 14px; background-color: {pal.panel};")
         _opaque_label(self._subtitle)
 
         tag_txt = (
@@ -101,7 +96,7 @@ class BootSplash(QWidget):
             else "Ghidra headless · optional Claude agent"
         )
         tag = QLabel(tag_txt)
-        tag.setStyleSheet(f"color: #565f89; font-size: 11px; background-color: {_SPLASH_PANEL};")
+        tag.setStyleSheet(f"color: {pal.muted}; font-size: 11px; background-color: {pal.panel};")
         _opaque_label(tag)
 
         titles.addWidget(self._title)
@@ -118,7 +113,7 @@ class BootSplash(QWidget):
         self._status.setWordWrap(True)
         self._status.setMinimumHeight(52)
         self._status.setStyleSheet(
-            f"color: #a9b1d6; font-size: 13px; background-color: {_SPLASH_PANEL}; padding-top: 12px;"
+            f"color: {pal.status}; font-size: 13px; background-color: {pal.panel}; padding-top: 12px;"
         )
         _opaque_label(self._status)
 
@@ -127,16 +122,15 @@ class BootSplash(QWidget):
         self._bar.setTextVisible(False)
         self._bar.setFixedHeight(8)
         self._bar.setStyleSheet(
-            """
-            QProgressBar { border: 0; border-radius: 8px; background: #24283b; }
-            QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7aa2f7, stop:1 #bb9af7); border-radius: 8px; }
-            """
+            f"QProgressBar {{ border: 0; border-radius: 8px; background: {pal.bar_track}; }}"
+            f"QProgressBar::chunk {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            f" stop:0 {pal.bar_a}, stop:1 {pal.bar_b}); border-radius: 8px; }}"
         )
 
         btn_style = (
-            "QPushButton { background: #414868; color: #c0caf5; padding: 10px 18px; border-radius: 12px; "
-            "font-size: 13px; }"
-            "QPushButton:hover { background: #565f89; }"
+            f"QPushButton {{ background: {pal.btn_bg}; color: {pal.text}; padding: 10px 18px;"
+            f" border-radius: 12px; font-size: 13px; border: none; }}"
+            f"QPushButton:hover {{ background: {pal.btn_hover}; }}"
         )
         self._btn_download_java = QPushButton("Download JDK")
         self._btn_download_java.setToolTip(
@@ -150,9 +144,9 @@ class BootSplash(QWidget):
         self._btn_continue = QPushButton("Open RawView")
         self._btn_continue.setVisible(False)
         btn_close_style = (
-            "QPushButton { background: transparent; color: #565f89; padding: 10px 14px; border-radius: 12px; "
-            "font-size: 13px; border: 1px solid #3b4261; }"
-            "QPushButton:hover { color: #a9b1d6; background: #24283b; border-color: #565f89; }"
+            f"QPushButton {{ background: transparent; color: {pal.muted}; padding: 10px 14px;"
+            f" border-radius: 12px; font-size: 13px; border: 1px solid {pal.border}; }}"
+            f"QPushButton:hover {{ color: {pal.status}; background: {pal.bar_track}; border-color: {pal.muted}; }}"
         )
         self._btn_close = QPushButton("Close RawView")
         self._btn_close.setToolTip("Exit the application without opening the main window.")
@@ -164,7 +158,7 @@ class BootSplash(QWidget):
 
         self._download_row = QWidget()
         self._download_row.setAutoFillBackground(True)
-        self._download_row.setStyleSheet(f"background-color: {_SPLASH_PANEL};")
+        self._download_row.setStyleSheet(f"background-color: {pal.panel};")
         dl = QHBoxLayout(self._download_row)
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(10)
@@ -172,28 +166,6 @@ class BootSplash(QWidget):
         dl.addWidget(self._btn_download)
         dl.addStretch()
         self._download_row.hide()
-
-        theme_lbl = QLabel("Theme:")
-        theme_lbl.setStyleSheet(f"color: #565f89; font-size: 11px; background-color: {_SPLASH_PANEL};")
-        _opaque_label(theme_lbl)
-        self._theme_combo = QComboBox()
-        self._theme_combo.setFixedHeight(26)
-        self._theme_combo.setStyleSheet(
-            f"QComboBox {{ background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; "
-            f"border-radius: 6px; padding: 2px 6px; font-size: 11px; }}"
-            f"QComboBox::drop-down {{ border: 0; }}"
-            f"QComboBox QAbstractItemView {{ background: #1a1b26; color: #c0caf5; selection-background-color: #364a82; }}"
-        )
-        for tid in THEME_IDS:
-            self._theme_combo.addItem(theme_display_name(tid), tid)
-        self._theme_combo.currentIndexChanged.connect(
-            lambda _: self.theme_changed.emit(self._theme_combo.currentData() or "tokyo_night")
-        )
-        theme_row = QHBoxLayout()
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        theme_row.setSpacing(8)
-        theme_row.addWidget(theme_lbl)
-        theme_row.addWidget(self._theme_combo, stretch=1)
 
         nav = QHBoxLayout()
         nav.setSpacing(10)
@@ -205,9 +177,7 @@ class BootSplash(QWidget):
         outer.addWidget(self._status)
         outer.addSpacing(10)
         outer.addWidget(self._bar)
-        outer.addSpacing(10)
-        outer.addLayout(theme_row)
-        outer.addSpacing(6)
+        outer.addSpacing(16)
         outer.addWidget(self._download_row)
         outer.addSpacing(8)
         outer.addLayout(nav)
@@ -226,6 +196,7 @@ class BootSplash(QWidget):
         self._apply_rounded_mask()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
+        pal = self._pal
         p = QPainter(self)
         # Qt starts the painter clipped to the dirty region; with a partial rect, our
         # full-widget fill/gradient only hit that sub-rectangle and stale pixels remain (H2).
@@ -234,14 +205,14 @@ class BootSplash(QWidget):
         rect = self.rect()
         inner = rect.adjusted(4, 4, -4, -4)
         # Solid erase of the entire splash (including under child widgets' repaint regions).
-        p.fillRect(rect, QColor(_SPLASH_PANEL))
+        p.fillRect(rect, QColor(pal.panel))
 
         grad = QLinearGradient(0, 0, float(self.width()), float(self.height()))
-        grad.setColorAt(0, QColor("#16161e"))
-        grad.setColorAt(0.55, QColor("#1a1b26"))
-        grad.setColorAt(1, QColor("#13141c"))
+        grad.setColorAt(0, QColor(pal.grad_a))
+        grad.setColorAt(0.55, QColor(pal.grad_b))
+        grad.setColorAt(1, QColor(pal.grad_c))
         p.setBrush(grad)
-        p.setPen(QPen(QColor("#3b4261"), 1))
+        p.setPen(QPen(QColor(pal.border), 1))
         p.drawRoundedRect(inner, 20, 20)
 
     def set_status(self, text: str) -> None:

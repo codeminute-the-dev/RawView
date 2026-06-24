@@ -114,6 +114,93 @@ def pseudocode_palette(theme_id: str) -> dict[str, str]:
     }
 
 
+@dataclass
+class CfgPalette:
+    bg: str
+    node_bg: str
+    node_border: str
+    node_hover: str
+    header_bg: str
+    header_sep: str
+    text_addr: str
+    text_header: str
+    text_body: str
+    text_more: str
+    edge_cond: str
+    edge_fall: str
+    edge_uncond: str
+    edge_other: str
+
+
+def cfg_palette(theme_id: str) -> CfgPalette:
+    """Return CFG graph colors for the given theme."""
+    tid = normalize_theme_id(theme_id)
+    if tid == "gruvbox":
+        return CfgPalette(
+            bg="#282828", node_bg="#3c3836", node_border="#504945",
+            node_hover="#83a598", header_bg="#32302f", header_sep="#504945",
+            text_addr="#83a598", text_header="#d5c4a1", text_body="#ebdbb2",
+            text_more="#928374", edge_cond="#b8bb26", edge_fall="#fe8019",
+            edge_uncond="#83a598", edge_other="#665c54",
+        )
+    if tid == "catppuccin_mocha":
+        return CfgPalette(
+            bg="#1e1e2e", node_bg="#313244", node_border="#45475a",
+            node_hover="#89b4fa", header_bg="#27273a", header_sep="#45475a",
+            text_addr="#89b4fa", text_header="#cdd6f4", text_body="#bac2de",
+            text_more="#585b70", edge_cond="#a6e3a1", edge_fall="#fab387",
+            edge_uncond="#89b4fa", edge_other="#585b70",
+        )
+    if tid == "nord":
+        return CfgPalette(
+            bg="#2e3440", node_bg="#3b4252", node_border="#434c5e",
+            node_hover="#88c0d0", header_bg="#353b4a", header_sep="#434c5e",
+            text_addr="#88c0d0", text_header="#eceff4", text_body="#d8dee9",
+            text_more="#616e88", edge_cond="#a3be8c", edge_fall="#d08770",
+            edge_uncond="#88c0d0", edge_other="#4c566a",
+        )
+    if tid == "dracula":
+        return CfgPalette(
+            bg="#282a36", node_bg="#44475a", node_border="#6272a4",
+            node_hover="#bd93f9", header_bg="#383a4a", header_sep="#6272a4",
+            text_addr="#bd93f9", text_header="#f8f8f2", text_body="#e2e2f0",
+            text_more="#6272a4", edge_cond="#50fa7b", edge_fall="#ffb86c",
+            edge_uncond="#bd93f9", edge_other="#44475a",
+        )
+    if tid == "onedark":
+        return CfgPalette(
+            bg="#282c34", node_bg="#3e4451", node_border="#5c6370",
+            node_hover="#61afef", header_bg="#353b45", header_sep="#5c6370",
+            text_addr="#61afef", text_header="#abb2bf", text_body="#98a0b0",
+            text_more="#5c6370", edge_cond="#98c379", edge_fall="#d19a66",
+            edge_uncond="#61afef", edge_other="#3e4451",
+        )
+    if tid == "solarized_dark":
+        return CfgPalette(
+            bg="#002b36", node_bg="#073642", node_border="#586e75",
+            node_hover="#268bd2", header_bg="#073642", header_sep="#586e75",
+            text_addr="#268bd2", text_header="#93a1a1", text_body="#839496",
+            text_more="#657b83", edge_cond="#859900", edge_fall="#cb4b16",
+            edge_uncond="#268bd2", edge_other="#586e75",
+        )
+    if tid == "kanagawa":
+        return CfgPalette(
+            bg="#1f1f28", node_bg="#2a2a37", node_border="#363646",
+            node_hover="#7e9cd8", header_bg="#252532", header_sep="#363646",
+            text_addr="#7e9cd8", text_header="#dcd7ba", text_body="#c8c093",
+            text_more="#54546d", edge_cond="#98bb6c", edge_fall="#ffa066",
+            edge_uncond="#7e9cd8", edge_other="#363646",
+        )
+    # Default: tokyo_night
+    return CfgPalette(
+        bg="#1a1b26", node_bg="#24283b", node_border="#414868",
+        node_hover="#7aa2f7", header_bg="#292e42", header_sep="#3b4261",
+        text_addr="#7dcfff", text_header="#7aa2f7", text_body="#a9b1d6",
+        text_more="#565f89", edge_cond="#9ece6a", edge_fall="#e0af68",
+        edge_uncond="#7aa2f7", edge_other="#565f89",
+    )
+
+
 def _dark_stylesheet(
     *,
     base: str,
@@ -789,3 +876,89 @@ def apply_application_style(app: QApplication, theme_id: str) -> None:
         app.setStyle("")
     else:
         app.setStyle("Fusion")
+
+
+@dataclass(frozen=True)
+class SplashPalette:
+    panel: str
+    grad_a: str
+    grad_b: str
+    grad_c: str
+    text: str
+    accent: str
+    muted: str
+    status: str
+    border: str
+    btn_bg: str
+    btn_hover: str
+    bar_track: str
+    bar_a: str
+    bar_b: str
+
+
+def splash_palette(theme_id: str) -> SplashPalette:
+    """Return splash-screen color palette for the given theme."""
+    tid = normalize_theme_id(theme_id)
+    if tid == "gruvbox":
+        return SplashPalette(
+            panel="#282828", grad_a="#1d2021", grad_b="#282828", grad_c="#1d2021",
+            text="#ebdbb2", accent="#83a598", muted="#928374", status="#bdae93",
+            border="#3d3835", btn_bg="#504945", btn_hover="#665c54",
+            bar_track="#3c3836", bar_a="#83a598", bar_b="#d3869b",
+        )
+    if tid == "catppuccin_mocha":
+        return SplashPalette(
+            panel="#1e1e2e", grad_a="#181825", grad_b="#1e1e2e", grad_c="#11111b",
+            text="#cdd6f4", accent="#89b4fa", muted="#6c7086", status="#bac2de",
+            border="#313244", btn_bg="#45475a", btn_hover="#585b70",
+            bar_track="#313244", bar_a="#89b4fa", bar_b="#cba6f7",
+        )
+    if tid == "nord":
+        return SplashPalette(
+            panel="#2e3440", grad_a="#242933", grad_b="#2e3440", grad_c="#1e232c",
+            text="#eceff4", accent="#88c0d0", muted="#616e88", status="#d8dee9",
+            border="#434c5e", btn_bg="#4c566a", btn_hover="#5e6a80",
+            bar_track="#3b4252", bar_a="#88c0d0", bar_b="#b48ead",
+        )
+    if tid == "dracula":
+        return SplashPalette(
+            panel="#282a36", grad_a="#1e1f29", grad_b="#282a36", grad_c="#191a22",
+            text="#f8f8f2", accent="#bd93f9", muted="#6272a4", status="#e2e2f0",
+            border="#44475a", btn_bg="#44475a", btn_hover="#6272a4",
+            bar_track="#383a4a", bar_a="#bd93f9", bar_b="#ff79c6",
+        )
+    if tid == "onedark":
+        return SplashPalette(
+            panel="#282c34", grad_a="#1d2027", grad_b="#282c34", grad_c="#1a1d22",
+            text="#abb2bf", accent="#61afef", muted="#5c6370", status="#98a0b0",
+            border="#3e4451", btn_bg="#3e4451", btn_hover="#5c6370",
+            bar_track="#2c323c", bar_a="#61afef", bar_b="#c678dd",
+        )
+    if tid == "solarized_dark":
+        return SplashPalette(
+            panel="#002b36", grad_a="#001f27", grad_b="#002b36", grad_c="#001a23",
+            text="#839496", accent="#268bd2", muted="#586e75", status="#657b83",
+            border="#073642", btn_bg="#073642", btn_hover="#586e75",
+            bar_track="#073642", bar_a="#268bd2", bar_b="#6c71c4",
+        )
+    if tid == "kanagawa":
+        return SplashPalette(
+            panel="#1f1f28", grad_a="#16161d", grad_b="#1f1f28", grad_c="#13131b",
+            text="#dcd7ba", accent="#7e9cd8", muted="#727169", status="#c8c093",
+            border="#363646", btn_bg="#54546d", btn_hover="#727169",
+            bar_track="#2a2a37", bar_a="#7e9cd8", bar_b="#957fb8",
+        )
+    if tid == "light":
+        return SplashPalette(
+            panel="#f0f4f8", grad_a="#e8eef5", grad_b="#f0f4f8", grad_c="#dde6ef",
+            text="#24292f", accent="#0969da", muted="#57606a", status="#57606a",
+            border="#c8d0da", btn_bg="#e2e8f0", btn_hover="#cdd4de",
+            bar_track="#d0d9e4", bar_a="#0969da", bar_b="#0550ae",
+        )
+    # Tokyo Night (default, also covers "system")
+    return SplashPalette(
+        panel="#1a1b26", grad_a="#16161e", grad_b="#1a1b26", grad_c="#13141c",
+        text="#c0caf5", accent="#7aa2f7", muted="#565f89", status="#a9b1d6",
+        border="#3b4261", btn_bg="#414868", btn_hover="#565f89",
+        bar_track="#24283b", bar_a="#7aa2f7", bar_b="#bb9af7",
+    )
