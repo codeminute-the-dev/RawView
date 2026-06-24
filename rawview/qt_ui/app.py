@@ -44,6 +44,20 @@ def run_qt_app(*, no_agent: bool = False) -> int:
     win = MainWindow(no_agent=no_agent)
     win.hide()
 
+    settings_init = load_settings()
+    _init_theme_idx = splash._theme_combo.findData(settings_init.rawview_theme)
+    if _init_theme_idx >= 0:
+        splash._theme_combo.blockSignals(True)
+        splash._theme_combo.setCurrentIndex(_init_theme_idx)
+        splash._theme_combo.blockSignals(False)
+
+    def _on_boot_theme_changed(tid: str) -> None:
+        save_user_settings_file({"RAWVIEW_THEME": tid})
+        win._ctrl.reload_settings()
+        win._apply_theme()
+
+    splash.theme_changed.connect(_on_boot_theme_changed)
+
     splash._boot_mode = "initial"  # type: ignore[attr-defined]
 
     boot_finished = False

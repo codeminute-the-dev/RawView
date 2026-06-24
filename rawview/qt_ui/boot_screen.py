@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QRegion,
 )
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from rawview.qt_ui.branding import app_icon_png_path
+from rawview.qt_ui.themes import THEME_IDS, theme_display_name
 
 
 # Opaque panel color (matches gradient mid-stop). Transparent QLabel styles cause
@@ -36,6 +38,8 @@ def _opaque_label(w: QWidget) -> None:
 
 
 class BootSplash(QWidget):
+    theme_changed = Signal(str)  # emits theme_id when user picks a new theme
+
     def __init__(self, *, no_agent: bool = False) -> None:
         super().__init__()
         self.setFixedSize(560, 400)
@@ -169,6 +173,28 @@ class BootSplash(QWidget):
         dl.addStretch()
         self._download_row.hide()
 
+        theme_lbl = QLabel("Theme:")
+        theme_lbl.setStyleSheet(f"color: #565f89; font-size: 11px; background-color: {_SPLASH_PANEL};")
+        _opaque_label(theme_lbl)
+        self._theme_combo = QComboBox()
+        self._theme_combo.setFixedHeight(26)
+        self._theme_combo.setStyleSheet(
+            f"QComboBox {{ background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; "
+            f"border-radius: 6px; padding: 2px 6px; font-size: 11px; }}"
+            f"QComboBox::drop-down {{ border: 0; }}"
+            f"QComboBox QAbstractItemView {{ background: #1a1b26; color: #c0caf5; selection-background-color: #364a82; }}"
+        )
+        for tid in THEME_IDS:
+            self._theme_combo.addItem(theme_display_name(tid), tid)
+        self._theme_combo.currentIndexChanged.connect(
+            lambda _: self.theme_changed.emit(self._theme_combo.currentData() or "tokyo_night")
+        )
+        theme_row = QHBoxLayout()
+        theme_row.setContentsMargins(0, 0, 0, 0)
+        theme_row.setSpacing(8)
+        theme_row.addWidget(theme_lbl)
+        theme_row.addWidget(self._theme_combo, stretch=1)
+
         nav = QHBoxLayout()
         nav.setSpacing(10)
         nav.addWidget(self._btn_close)
@@ -179,7 +205,9 @@ class BootSplash(QWidget):
         outer.addWidget(self._status)
         outer.addSpacing(10)
         outer.addWidget(self._bar)
-        outer.addSpacing(16)
+        outer.addSpacing(10)
+        outer.addLayout(theme_row)
+        outer.addSpacing(6)
         outer.addWidget(self._download_row)
         outer.addSpacing(8)
         outer.addLayout(nav)

@@ -83,9 +83,24 @@ class SettingsDialog(QDialog):
         self._classpath = QTextEdit()
         self._classpath.setPlaceholderText("Optional full Java classpath (overrides auto-discovery)")
         self._classpath.setMaximumHeight(80)
+        _KNOWN_MODELS = [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+            "claude-fable-5",
+        ]
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._model = QLineEdit()
+        self._model = QComboBox()
+        self._model.setEditable(True)
+        self._model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for mid in _KNOWN_MODELS:
+            self._model.addItem(mid)
+        self._model.setToolTip("Anthropic model ID. Select from the list or type a custom model ID.")
+        self._model.currentTextChanged.connect(self._on_model_changed)
         self._max_turns = QSpinBox()
         self._max_turns.setRange(1, 256)
         self._hist = QSpinBox()
@@ -111,11 +126,18 @@ class SettingsDialog(QDialog):
         self._think_budget.setRange(1024, 100_000)
         self._think_budget.setSingleStep(1024)
         self._effort_combo = QComboBox()
-        for val, label in [("low", "Low — faster, shorter replies"), ("medium", "Medium (default)"), ("high", "High — deeper reasoning")]:
+        for val, label in [
+            ("low", "Low: faster, shorter replies"),
+            ("medium", "Medium (default)"),
+            ("high", "High: deeper reasoning"),
+            ("xhigh", "xhigh: Opus 4.8 only"),
+            ("max", "Max: maximum reasoning"),
+        ]:
             self._effort_combo.addItem(label, val)
         self._effort_combo.setToolTip(
             "Controls how much reasoning effort the model applies (output_config.effort). "
-            "Low = faster, shorter. Medium = balanced default. High = more thorough but slower and pricier."
+            "Low/medium/high/max: all current models. xhigh: Opus 4.8 only. "
+            "Haiku 4.5 ignores this setting."
         )
         self._auto_bridge = QCheckBox("Start Ghidra JVM automatically when RawView launches")
         self._auto_bridge.setToolTip("When enabled, the boot screen waits for the Ghidra bridge to come up.")
@@ -323,12 +345,13 @@ class SettingsDialog(QDialog):
         if s.rawview_java_classpath:
             self._classpath.setPlainText(s.rawview_java_classpath)
         self._api_key.setText(s.anthropic_api_key)
-        self._model.setText(s.anthropic_model)
+        self._model.setCurrentText(s.anthropic_model)
         self._max_turns.setValue(s.agent_max_turns)
         self._hist.setValue(s.agent_history_messages)
         self._agent_temp.setValue(float(s.agent_temperature))
         self._think.setChecked(s.agent_extended_thinking)
         self._think_budget.setValue(s.agent_thinking_budget_tokens)
+        self._on_model_changed(s.anthropic_model)
         effort_idx = self._effort_combo.findData(s.agent_effort)
         if effort_idx >= 0:
             self._effort_combo.setCurrentIndex(effort_idx)
@@ -337,6 +360,16 @@ class SettingsDialog(QDialog):
         idx = self._theme.findData(tid)
         if idx >= 0:
             self._theme.setCurrentIndex(idx)
+
+    def _on_model_changed(self, model: str) -> None:
+        m = model.lower()
+        is_adaptive = ("claude-sonnet-4" in m or "claude-opus-4" in m or "claude-fable" in m or "claude-mythos" in m) and "haiku" not in m
+        self._think_budget.setEnabled(not is_adaptive)
+        self._think_budget.setToolTip(
+            "Not used for this model — it uses adaptive thinking (self-selects budget)."
+            if is_adaptive else
+            "Max tokens the model may use for thinking (for models that don't support adaptive thinking)."
+        )
 
     def _browse_ghidra(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Ghidra installation root")
@@ -486,7 +519,7 @@ class SettingsDialog(QDialog):
 
         if self._ctrl.agent_enabled:
             data["ANTHROPIC_API_KEY"] = self._api_key.text().strip()
-            data["ANTHROPIC_MODEL"] = self._model.text().strip() or "claude-opus-4-6"
+            data["ANTHROPIC_MODEL"] = self._model.currentText().strip() or "claude-opus-4-6"
             data["AGENT_MAX_TURNS"] = str(self._max_turns.value())
             data["AGENT_HISTORY_MESSAGES"] = str(self._hist.value())
             data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
