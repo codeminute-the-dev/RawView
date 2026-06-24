@@ -15,6 +15,11 @@ if ! python -c "import PyInstaller" 2>/dev/null; then
     pip install "pyinstaller>=6.0"
 fi
 
+if ! python -c "import pypresence" 2>/dev/null; then
+    echo "Installing pypresence for Discord Rich Presence..."
+    pip install pypresence
+fi
+
 # Compile the Java bridge if GHIDRA_INSTALL_DIR is set and classes are missing.
 MARKER="rawview/java/out/io/rawview/ghidra/GhidraServer.class"
 if [ -n "${GHIDRA_INSTALL_DIR:-}" ] && [ ! -f "$MARKER" ]; then

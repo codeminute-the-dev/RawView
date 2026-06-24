@@ -69,6 +69,8 @@ hiddenimports = [
     # java_gateway loads this with __import__ at runtime when auto_convert=True (PyInstaller misses it).
     "py4j.java_collections",
     "psutil",
+    # Discord Rich Presence (optional, gracefully missing).
+    "pypresence",
 ]
 
 for pkg in ("PySide6", "shiboken6"):

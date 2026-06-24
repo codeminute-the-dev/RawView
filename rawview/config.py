@@ -53,7 +53,8 @@ def _env_files() -> tuple[Path, ...]:
     """Later entries override earlier (cwd `.env` wins over user file for developers)."""
     user = user_settings_env_path()
     cwd = Path.cwd() / ".env"
-    return (user, cwd)
+    repo_rawview = Path.cwd() / "rawview.env"
+    return (user, repo_rawview, cwd)
 
 
 class Settings(BaseSettings):
@@ -124,7 +125,7 @@ class Settings(BaseSettings):
 
     rawview_theme: str = Field(default="tokyo_night", validation_alias="RAWVIEW_THEME")
 
-    discord_client_id: str = Field(default="", validation_alias="DISCORD_CLIENT_ID")
+    discord_client_id: str = Field(default="1519331610510622893", validation_alias="DISCORD_CLIENT_ID")
 
     @field_validator("rawview_theme", mode="before")
     @classmethod
