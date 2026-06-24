@@ -716,8 +716,10 @@ def agent_dock_stylesheet(theme_id: str) -> str:
                 background: palette(base); border-radius: 4px; padding: 6px; border: 1px solid palette(mid); }
             QTextBrowser#agent_feed { background-color: palette(base); color: palette(text);
                 border: 1px solid palette(mid); border-radius: 6px; }
-            QTextEdit#agent_prompt { background-color: palette(base); color: palette(text);
-                border: 1px solid palette(mid); border-radius: 6px; padding: 4px; }
+            QFrame#agent_input_frame { background-color: palette(base); border: 1px solid palette(mid);
+                border-radius: 6px; }
+            QTextEdit#agent_prompt { background-color: transparent; color: palette(text);
+                border: none; padding: 2px; }
         """
     c = _AGENT_DOCK_CHROME.get(tid) or _AGENT_DOCK_CHROME["tokyo_night"]
     return f"""
@@ -735,9 +737,11 @@ def agent_dock_stylesheet(theme_id: str) -> str:
         QTextBrowser#agent_feed {{
             background-color: {c.feed_bg}; color: {c.feed_fg}; border: 1px solid {c.feed_border}; border-radius: 6px;
         }}
+        QFrame#agent_input_frame {{
+            background-color: {c.prompt_bg}; border: 1px solid {c.prompt_border}; border-radius: 6px;
+        }}
         QTextEdit#agent_prompt {{
-            background-color: {c.prompt_bg}; color: {c.prompt_fg};
-            border: 1px solid {c.prompt_border}; border-radius: 6px; padding: 4px;
+            background-color: transparent; color: {c.prompt_fg}; border: none; padding: 2px;
         }}
     """
 

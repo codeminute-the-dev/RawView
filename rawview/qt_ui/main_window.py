@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
     QSettings,
+    QSize,
     QTimer,
     Qt,
     QUrl,
@@ -57,6 +58,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+import qtawesome as qta
 
 from rawview.config import user_data_dir
 from rawview.qt_ui.cfg_panel import CfgPanel
@@ -595,23 +598,40 @@ class MainWindow(QMainWindow):
         self._attach_preview.setVisible(False)
         al.addWidget(self._attach_preview)
 
-        # ── Input bar: [📎] [prompt] [Send/Stop] ───────────────────────────────
+        # ── Input bar: [ [⊕  prompt text area  ] ] [Send/Stop] ────────────────
         input_row = QHBoxLayout()
-        input_row.setSpacing(4)
-        self._btn_attach = QPushButton("📎")
+        input_row.setSpacing(6)
+
+        # Unified input box: the circle-plus lives INSIDE the styled frame
+        input_frame = QFrame()
+        input_frame.setObjectName("agent_input_frame")
+        input_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        input_frame_layout = QHBoxLayout(input_frame)
+        input_frame_layout.setContentsMargins(6, 4, 6, 4)
+        input_frame_layout.setSpacing(6)
+
+        self._btn_attach = QPushButton()
         self._btn_attach.setObjectName("btn_attach")
-        self._btn_attach.setToolTip("Attach an image (PNG, JPG, GIF, WEBP)")
-        self._btn_attach.setFixedWidth(32)
+        self._btn_attach.setToolTip("Attach image or document")
+        self._btn_attach.setIcon(qta.icon("fa6s.circle-plus", color="#565f89"))
+        self._btn_attach.setIconSize(QSize(20, 20))
+        self._btn_attach.setFixedSize(28, 28)
+        self._btn_attach.setFlat(True)
         self._btn_attach.setAutoDefault(False)
-        self._btn_attach.clicked.connect(self._attach_image)
-        input_row.addWidget(self._btn_attach)
+        self._btn_attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_attach.clicked.connect(self._show_attach_menu)
+        input_frame_layout.addWidget(self._btn_attach, alignment=Qt.AlignmentFlag.AlignVCenter)
+
         self._agent_prompt = QTextEdit()
         self._agent_prompt.setObjectName("agent_prompt")
-        self._agent_prompt.setPlaceholderText(
-            "Ask the agent… /summarize to compress history. (ANTHROPIC_API_KEY required)"
-        )
+        self._agent_prompt.setPlaceholderText("Ask the agent… /summarize to compress history.")
+        self._agent_prompt.setMinimumHeight(34)
         self._agent_prompt.setMaximumHeight(100)
-        input_row.addWidget(self._agent_prompt, stretch=1)
+        self._agent_prompt.setFrameShape(QFrame.Shape.NoFrame)
+        input_frame_layout.addWidget(self._agent_prompt, stretch=1)
+
+        input_row.addWidget(input_frame, stretch=1)
+
         self._btn_send_stop = QPushButton("Send")
         self._btn_send_stop.setObjectName("btn_send_stop")
         self._btn_send_stop.setAutoDefault(False)
@@ -1382,6 +1402,57 @@ class MainWindow(QMainWindow):
         else:
             self._send_agent()
 
+    def _show_attach_menu(self) -> None:
+        if self._no_agent:
+            return
+        menu = QMenu(self)
+        img_act = menu.addAction(qta.icon("fa6s.image", color="#7aa2f7"), "Image  (PNG, JPG, GIF, WEBP)")
+        pdf_act = menu.addAction(qta.icon("fa6s.file-pdf", color="#f7768e"), "PDF Document")
+        txt_act = menu.addAction(qta.icon("fa6s.file-lines", color="#e0af68"), "Text File  (TXT, MD, CSV…)")
+        pos = self._btn_attach.mapToGlobal(self._btn_attach.rect().topLeft())
+        act = menu.exec(pos)
+        if act == img_act:
+            self._attach_image()
+        elif act == pdf_act:
+            self._attach_document("pdf")
+        elif act == txt_act:
+            self._attach_document("text")
+
+    def _attach_document(self, kind: str) -> None:
+        if self._no_agent:
+            return
+        if kind == "pdf":
+            fpath, _ = QFileDialog.getOpenFileName(
+                self, "Attach PDF", "", "PDF Documents (*.pdf);;All files (*)"
+            )
+        else:
+            fpath, _ = QFileDialog.getOpenFileName(
+                self, "Attach Text File", "",
+                "Text files (*.txt *.md *.csv *.py *.js *.ts *.json *.yaml *.toml *.xml *.html *.c *.cpp *.h *.rs);;All files (*)",
+            )
+        if not fpath:
+            return
+        path = Path(fpath)
+        try:
+            if kind == "pdf":
+                data = base64.standard_b64encode(path.read_bytes()).decode()
+                self._pending_images.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+                    "title": path.name,
+                })
+            else:
+                text_data = path.read_text(encoding="utf-8", errors="replace")
+                self._pending_images.append({
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": text_data},
+                    "title": path.name,
+                })
+        except OSError as e:
+            self.statusBar().showMessage(f"Could not read file: {e}", 5000)
+            return
+        self._update_attach_preview()
+
     def _attach_image(self) -> None:
         if self._no_agent:
             return
@@ -1417,8 +1488,14 @@ class MainWindow(QMainWindow):
             self._attach_preview.setVisible(False)
             self._attach_preview.clear()
         else:
-            noun = "image" if n == 1 else "images"
-            self._attach_preview.setText(f"📎 {n} {noun} attached — will send with next message")
+            imgs = sum(1 for a in self._pending_images if a.get("type") == "image")
+            docs = sum(1 for a in self._pending_images if a.get("type") == "document")
+            parts: list[str] = []
+            if imgs:
+                parts.append(f"{imgs} image{'s' if imgs != 1 else ''}")
+            if docs:
+                parts.append(f"{docs} document{'s' if docs != 1 else ''}")
+            self._attach_preview.setText(f"📎 {', '.join(parts)} attached — will send with next message")
             self._attach_preview.setVisible(True)
 
     def _send_agent(self) -> None:
@@ -1434,7 +1511,7 @@ class MainWindow(QMainWindow):
         img_note = ""
         if self._pending_images:
             n = len(self._pending_images)
-            noun = "image" if n == 1 else "images"
+            noun = "attachment" if n == 1 else "attachments"
             img_note = f' <span class="rvmeta">[+{n} {noun}]</span>'
         if raw.strip() or self._pending_images:
             self._append_feed_html(
