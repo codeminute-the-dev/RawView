@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTextBrowser,
@@ -116,6 +117,7 @@ class _WorkEditor(QWidget):
         ):
             b = QPushButton(label)
             b.setAutoDefault(False)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch(1)
