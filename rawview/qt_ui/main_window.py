@@ -829,6 +829,9 @@ class MainWindow(QMainWindow):
             if self.width() > max_inner_w or self.height() > max_inner_h:
                 self.resize(1400, 900)
 
+        if self.isMaximized() or self.isFullScreen():
+            return
+
         min_sz = self.minimumSize()
         cw = max(min_sz.width(), min(self.width(), max_inner_w))
         ch = max(min_sz.height(), min(self.height(), max_inner_h))
