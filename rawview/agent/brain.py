@@ -112,6 +112,7 @@ class AgentBrain:
         extended_thinking: bool = False,
         thinking_budget_tokens: int = 4096,
         temperature: float = 0.3,
+        effort: str = "medium",
         batch_port: AgentBatchToolPort | None = None,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
@@ -125,6 +126,7 @@ class AgentBrain:
         self._extended_thinking = extended_thinking
         self._thinking_budget_tokens = thinking_budget_tokens
         self._temperature = float(temperature)
+        self._effort = effort if effort in ("low", "medium", "high", "xhigh", "max") else "medium"
         self._interrupt = threading.Event()
 
     def _messages_turn_stream(self, params: dict[str, Any]) -> Any:
@@ -419,6 +421,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                 "messages": self._memory.for_api(),
                 "tools": tools_cached,
                 "temperature": self._temperature,
+                "output_config": {"effort": self._effort},
             }
             msg = None
             streamed_turn = False

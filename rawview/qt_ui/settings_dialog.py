@@ -110,6 +110,13 @@ class SettingsDialog(QDialog):
         self._think_budget = QSpinBox()
         self._think_budget.setRange(1024, 100_000)
         self._think_budget.setSingleStep(1024)
+        self._effort_combo = QComboBox()
+        for val, label in [("low", "Low — faster, shorter replies"), ("medium", "Medium (default)"), ("high", "High — deeper reasoning")]:
+            self._effort_combo.addItem(label, val)
+        self._effort_combo.setToolTip(
+            "Controls how much reasoning effort the model applies (output_config.effort). "
+            "Low = faster, shorter. Medium = balanced default. High = more thorough but slower and pricier."
+        )
         self._auto_bridge = QCheckBox("Start Ghidra JVM automatically when RawView launches")
         self._auto_bridge.setToolTip("When enabled, the boot screen waits for the Ghidra bridge to come up.")
 
@@ -180,6 +187,7 @@ class SettingsDialog(QDialog):
         af.addRow("Thinking budget (tokens)", self._think_budget)
         af.addRow("Agent max turns", self._max_turns)
         af.addRow("Agent history messages", self._hist)
+        af.addRow("Agent effort level", self._effort_combo)
         af.addRow("Agent temperature (0-1)", self._agent_temp)
         self._agent_form_block.setVisible(controller.agent_enabled)
         if not controller.agent_enabled:
@@ -321,6 +329,9 @@ class SettingsDialog(QDialog):
         self._agent_temp.setValue(float(s.agent_temperature))
         self._think.setChecked(s.agent_extended_thinking)
         self._think_budget.setValue(s.agent_thinking_budget_tokens)
+        effort_idx = self._effort_combo.findData(s.agent_effort)
+        if effort_idx >= 0:
+            self._effort_combo.setCurrentIndex(effort_idx)
         self._auto_bridge.setChecked(s.rawview_auto_start_bridge)
         tid = normalize_theme_id(s.rawview_theme)
         idx = self._theme.findData(tid)
@@ -481,6 +492,7 @@ class SettingsDialog(QDialog):
             data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
             data["AGENT_EXTENDED_THINKING"] = "true" if self._think.isChecked() else "false"
             data["AGENT_THINKING_BUDGET_TOKENS"] = str(self._think_budget.value())
+            data["AGENT_EFFORT"] = str(self._effort_combo.currentData() or "medium")
         save_user_settings_file(data)
         self._ctrl.reload_settings()
         self.accept()

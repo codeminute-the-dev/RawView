@@ -605,6 +605,7 @@ class RawViewQtController(QObject):
                     extended_thinking=self.settings.agent_extended_thinking,
                     thinking_budget_tokens=self.settings.agent_thinking_budget_tokens,
                     temperature=self.settings.agent_temperature,
+                    effort=self.settings.agent_effort,
                     batch_port=batch_port,
                 )
                 if self._agent_stop_event.is_set():

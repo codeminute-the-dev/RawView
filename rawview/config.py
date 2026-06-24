@@ -105,7 +105,8 @@ class Settings(BaseSettings):
     rawview_java_classes_dir: Path | None = Field(default=None, validation_alias="RAWVIEW_JAVA_CLASSES_DIR")
 
     agent_max_turns: int = Field(default=32, validation_alias="AGENT_MAX_TURNS")
-    agent_history_messages: int = Field(default=96, validation_alias="AGENT_HISTORY_MESSAGES")
+    agent_history_messages: int = Field(default=64, validation_alias="AGENT_HISTORY_MESSAGES")
+    agent_effort: str = Field(default="medium", validation_alias="AGENT_EFFORT")
     agent_extended_thinking: bool = Field(default=True, validation_alias="AGENT_EXTENDED_THINKING")
     agent_thinking_budget_tokens: int = Field(
         default=4096,
