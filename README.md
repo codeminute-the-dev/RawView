@@ -22,6 +22,8 @@ AI-assisted reverse engineering for **Ghidra**: a **Qt (PySide6)** desktop app t
 
 **Author:** [@codeminute-the-dev](https://github.com/codeminute-the-dev)
 
+**Discord:** [Codeminute's Discord Server](https://discord.gg/aHRjNzhNgk)
+
 ---
 
 ## Features
