@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Linux: .deb + .AppImage + .rpm ────────────────────────────────────────
+  linux:
+    name: Linux packages
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y rpm-build dpkg-dev
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Compile Java bridge
+        env:
+          GHIDRA_INSTALL_DIR: ""   # skip; bridge is compiled at runtime on first launch
+        run: echo "Skipping Java compile (downloaded at runtime)"
+
+      - name: Build PyInstaller bundle
+        run: bash build-linux.sh
+
+      - name: Build .deb
+        run: bash build-deb.sh --skip-pyinstaller
+
+      - name: Build .AppImage
+        run: bash build-appimage.sh --skip-pyinstaller
+
+      - name: Build .rpm
+        run: bash build-rpm.sh --skip-pyinstaller
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist_installer/rawview*.deb dist_installer/RawView*.AppImage dist_installer/rawview*.rpm
+          if-no-files-found: error
+
+  # ── Windows: .msi ─────────────────────────────────────────────────────────
+  windows:
+    name: Windows MSI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Install WiX Toolset 3.14
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $zip = "$env:RUNNER_TEMP\wix314.zip"
+          $dir = "$env:RUNNER_TEMP\wix314"
+          Invoke-WebRequest $url -OutFile $zip
+          Expand-Archive $zip -DestinationPath $dir
+          echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "WIX=$dir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      - name: Build MSI
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-msi.ps1
+        shell: cmd
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: dist_installer\RawView-*.msi
+          if-no-files-found: error
+
+  # ── GitHub Release ─────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [linux, windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist_installer/
+
+      - name: Download Windows MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-msi
+          path: dist_installer/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "RawView ${{ github.ref_name }}"
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            dist_installer/rawview_*.deb
+            dist_installer/RawView-*.AppImage
+            dist_installer/rawview-*.rpm
+            dist_installer/RawView-*.msi
