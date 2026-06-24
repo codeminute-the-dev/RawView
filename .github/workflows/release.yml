@@ -24,7 +24,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y rpm-build dpkg-dev
+          sudo apt-get install -y alien dpkg-dev
 
       - name: Install Python deps
         run: |
