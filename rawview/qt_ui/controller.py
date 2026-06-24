@@ -541,11 +541,11 @@ class RawViewQtController(QObject):
 
         threading.Thread(target=work, name="rawview-agent-shell-refresh", daemon=True).start()
 
-    def send_agent_prompt(self, text: str) -> None:
+    def send_agent_prompt(self, text: str, images: list[dict] | None = None) -> None:
         if not self.agent_enabled:
             return
         text = text.strip()
-        if not text:
+        if not text and not images:
             return
         low = text.lower()
         if low == "/summarize" or low.startswith("/summarize "):
@@ -565,6 +565,8 @@ class RawViewQtController(QObject):
                 {"message": "Set ANTHROPIC_API_KEY in File → Settings."},
             )
             return
+
+        is_new_chat = not self.agent_memory.is_nonempty()
 
         def start() -> None:
             def emit(kind: str, data: dict[str, Any]) -> None:
@@ -608,12 +610,14 @@ class RawViewQtController(QObject):
                 if self._agent_stop_event.is_set():
                     self._brain.interrupt()
 
+                brain_ref = self._brain
+
                 def run() -> None:
                     emit("agent_generating", {"active": True})
                     try:
                         try:
-                            assert self._brain is not None
-                            self._brain.run_user_prompt(text, goal=goal)
+                            assert brain_ref is not None
+                            brain_ref.run_user_prompt(text, goal=goal, images=images or None)
                         except Exception as e:
                             logger.exception("agent")
                             self.agent_event.emit(
@@ -626,6 +630,18 @@ class RawViewQtController(QObject):
 
                 self._agent_thread = threading.Thread(target=run, name="rawview-agent", daemon=True)
                 self._agent_thread.start()
+
+                # Generate chat title via Haiku after first message (non-blocking).
+                if is_new_chat and text.strip():
+                    title_text = text
+                    b = brain_ref
+
+                    def _gen_title() -> None:
+                        title = b.generate_chat_title(title_text)
+                        if title:
+                            self.agent_event.emit("chat_title", {"title": title})
+
+                    threading.Thread(target=_gen_title, name="rawview-title-gen", daemon=True).start()
 
         threading.Thread(target=start, name="rawview-agent-bootstrap", daemon=True).start()
 

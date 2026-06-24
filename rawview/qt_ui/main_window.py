@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
@@ -101,13 +102,15 @@ class MainWindow(QMainWindow):
         self._spotlight_overlay: QWidget | None = None
         self._agent_feed_html_chunks: list[str] = []
         self._agent_tool_expand_html: dict[str, str] = {}
-        self._agent_stream_plain: str = ""
-        self._agent_gen_dots_phase: int = 0
-        self._agent_gen_dots_timer = QTimer(self)
-        self._agent_gen_dots_timer.setInterval(420)
-        self._agent_gen_dots_timer.timeout.connect(self._tick_agent_gen_dots)
-        self._agent_gen_opacity_anim: QPropertyAnimation | None = None
-        self._btn_send_pulse_anim: QPropertyAnimation | None = None
+        # Streaming-into-feed state
+        self._stream_start_pos: int = -1
+        self._stream_ts: str = ""
+        self._stream_plain_parts: list[str] = []
+        # Image attachment
+        self._pending_images: list[dict] = []
+        # Generation state
+        self._agent_generating: bool = False
+        self._chat_title: str = ""
         self._program_loaded: bool = False
         self._psutil_mod: Any = None  # lazy: False = unavailable, else the psutil module
         self._nav_history: list[str] = []
@@ -175,20 +178,14 @@ class MainWindow(QMainWindow):
     def _clear_agent_feed(self) -> None:
         if self._no_agent:
             return
-        self._agent_gen_dots_timer.stop()
-        if self._agent_gen_opacity_anim is not None:
-            self._agent_gen_opacity_anim.stop()
-        if self._btn_send_pulse_anim is not None:
-            self._btn_send_pulse_anim.stop()
-        eff_send = self._btn_send.graphicsEffect()
-        if isinstance(eff_send, QGraphicsOpacityEffect):
-            eff_send.setOpacity(1.0)
-        self._agent_activity.setVisible(False)
-        self._agent_gen_label.clear()
-        self._agent_live_thinking.clear()
-        self._agent_live_thinking.setVisible(False)
-        self._agent_live_stream.clear()
-        self._agent_stream_plain = ""
+        self._stream_start_pos = -1
+        self._stream_plain_parts = []
+        self._agent_generating = False
+        self._btn_send_stop.setText("Send")
+        self._thinking_indicator.clear()
+        self._thinking_indicator.setVisible(False)
+        self._chat_title = ""
+        self._chat_title_label.setText("")
         self._agent_feed.clear()
         self._agent_feed_html_chunks.clear()
         self._agent_tool_expand_html.clear()
@@ -265,62 +262,14 @@ class MainWindow(QMainWindow):
             self._agent_tool_expand_html.pop(uid, None)
             self._replay_feed_html_chunks(new_chunks, preserve_scroll=True)
 
-    def _wire_agent_activity_animation(self) -> None:
-        eff = QGraphicsOpacityEffect(self._agent_activity)
-        self._agent_activity.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(1400)
-        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        anim.setLoopCount(-1)
-        anim.setStartValue(0.72)
-        anim.setEndValue(1.0)
-        self._agent_gen_opacity_anim = anim
-
-    def _wire_agent_send_button_pulse(self) -> None:
-        eff = QGraphicsOpacityEffect(self._btn_send)
-        self._btn_send.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(1100)
-        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        anim.setLoopCount(-1)
-        anim.setStartValue(0.82)
-        anim.setEndValue(1.0)
-        self._btn_send_pulse_anim = anim
-
     def _set_agent_generating(self, active: bool) -> None:
+        self._agent_generating = active
         if active:
-            self._agent_activity.setVisible(True)
-            self._agent_gen_dots_phase = 0
-            self._tick_agent_gen_dots()
-            self._agent_gen_dots_timer.start()
-            if self._agent_gen_opacity_anim is not None:
-                self._agent_gen_opacity_anim.start()
-            if self._btn_send_pulse_anim is not None:
-                self._btn_send_pulse_anim.start()
+            self._btn_send_stop.setText("■ Stop")
         else:
-            self._agent_gen_dots_timer.stop()
-            if self._agent_gen_opacity_anim is not None:
-                self._agent_gen_opacity_anim.stop()
-            if self._btn_send_pulse_anim is not None:
-                self._btn_send_pulse_anim.stop()
-            eff_btn = self._btn_send.graphicsEffect()
-            if isinstance(eff_btn, QGraphicsOpacityEffect):
-                eff_btn.setOpacity(1.0)
-            self._agent_gen_label.clear()
-            if (
-                not self._agent_stream_plain
-                and self._agent_live_stream.text().strip() == ""
-                and self._agent_live_thinking.text().strip() == ""
-            ):
-                self._agent_activity.setVisible(False)
-            eff = self._agent_activity.graphicsEffect()
-            if isinstance(eff, QGraphicsOpacityEffect):
-                eff.setOpacity(1.0)
-
-    def _tick_agent_gen_dots(self) -> None:
-        self._agent_gen_dots_phase = (self._agent_gen_dots_phase + 1) % 4
-        dots = "." * self._agent_gen_dots_phase
-        self._agent_gen_label.setText(f"Model is generating{dots}")
+            self._btn_send_stop.setText("Send")
+            self._thinking_indicator.clear()
+            self._thinking_indicator.setVisible(False)
 
     def _show_user_tip(self, message: str) -> None:
         self._tip_label.setText(message[:400])
@@ -595,45 +544,19 @@ class MainWindow(QMainWindow):
         agent.setObjectName("agent_dock_root")
         self._agent_dock_root = agent
         al = QVBoxLayout(agent)
-        self._agent_activity = QFrame()
-        self._agent_activity.setObjectName("agent_activity")
-        self._agent_activity.setVisible(False)
-        act_outer = QVBoxLayout(self._agent_activity)
-        act_outer.setContentsMargins(8, 6, 8, 6)
-        self._agent_gen_label = QLabel("")
-        self._agent_gen_label.setObjectName("agent_gen_label")
-        self._agent_live_thinking = QLabel("")
-        self._agent_live_thinking.setObjectName("agent_live_thinking")
-        self._agent_live_thinking.setWordWrap(True)
-        self._agent_live_thinking.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._agent_live_thinking.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-        self._agent_live_thinking.setMaximumHeight(140)
-        self._agent_live_thinking.setVisible(False)
-        self._agent_live_stream = QLabel("")
-        self._agent_live_stream.setObjectName("agent_live_stream")
-        self._agent_live_stream.setWordWrap(True)
-        self._agent_live_stream.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._agent_live_stream.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-        self._agent_live_stream.setMaximumHeight(160)
-        act_outer.addWidget(self._agent_gen_label)
-        act_outer.addWidget(self._agent_live_thinking)
-        act_outer.addWidget(self._agent_live_stream)
-        al.addWidget(self._agent_activity)
-        self._agent_feed = QTextBrowser()
-        self._agent_feed.setObjectName("agent_feed")
-        self._agent_feed.setReadOnly(True)
-        self._agent_feed.setOpenLinks(False)
-        self._agent_feed.setOpenExternalLinks(False)
-        self._agent_feed.anchorClicked.connect(self._on_agent_feed_anchor)
-        self._agent_feed.setPlaceholderText("Agent activity (tools, results) streams here when enabled.")
-        self._agent_prompt = QTextEdit()
-        self._agent_prompt.setObjectName("agent_prompt")
-        self._agent_prompt.setPlaceholderText(
-            "Ask the agent… Type /summarize to compress chat history when it grows. (ANTHROPIC_API_KEY required)"
-        )
-        self._agent_prompt.setMaximumHeight(100)
+        al.setContentsMargins(6, 6, 6, 6)
+        al.setSpacing(4)
+
+        # ── Header row ─────────────────────────────────────────────────────────
         row_head = QHBoxLayout()
-        row_head.addWidget(QLabel("Agent (optional)"))
+        row_head.setSpacing(6)
+        head_lbl = QLabel("Agent")
+        head_lbl.setObjectName("agent_head_label")
+        row_head.addWidget(head_lbl)
+        self._chat_title_label = QLabel("")
+        self._chat_title_label.setObjectName("agent_chat_title")
+        self._chat_title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row_head.addWidget(self._chat_title_label, stretch=1)
         self._btn_new_chat = QPushButton("New chat")
         self._btn_new_chat.setToolTip("Save this session to disk and start a fresh conversation.")
         self._btn_new_chat.setAutoDefault(False)
@@ -641,29 +564,67 @@ class MainWindow(QMainWindow):
         row_head.addWidget(self._btn_new_chat)
         row_head.addWidget(QLabel("Saved:"))
         self._chat_combo = QComboBox()
-        self._chat_combo.setMinimumWidth(200)
+        self._chat_combo.setMinimumWidth(160)
         self._chat_combo.setToolTip("Open a previously saved agent conversation.")
         self._chat_combo.currentIndexChanged.connect(self._on_saved_chat_selected)
         row_head.addWidget(self._chat_combo, stretch=1)
-        row_a = QHBoxLayout()
-        self._btn_send = QPushButton("Run agent")
-        self._btn_send.clicked.connect(self._send_agent)
-        self._btn_stop = QPushButton("Stop")
-        self._btn_stop.clicked.connect(self._ctrl.interrupt_agent)
-        row_a.addWidget(self._btn_send)
-        row_a.addWidget(self._btn_stop)
         al.addLayout(row_head)
+
+        # ── Chat feed ──────────────────────────────────────────────────────────
+        self._agent_feed = QTextBrowser()
+        self._agent_feed.setObjectName("agent_feed")
+        self._agent_feed.setReadOnly(True)
+        self._agent_feed.setOpenLinks(False)
+        self._agent_feed.setOpenExternalLinks(False)
+        self._agent_feed.anchorClicked.connect(self._on_agent_feed_anchor)
+        self._agent_feed.setPlaceholderText("Agent activity (tools, results) streams here when enabled.")
         al.addWidget(self._agent_feed, stretch=1)
-        al.addWidget(self._agent_prompt)
-        al.addLayout(row_a)
+
+        # ── Thinking indicator (shown while model reasons) ─────────────────────
+        self._thinking_indicator = QLabel("")
+        self._thinking_indicator.setObjectName("agent_thinking_indicator")
+        self._thinking_indicator.setVisible(False)
+        self._thinking_indicator.setWordWrap(True)
+        self._thinking_indicator.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._thinking_indicator.setMaximumHeight(52)
+        al.addWidget(self._thinking_indicator)
+
+        # ── Attachment preview ──────────────────────────────────────────────────
+        self._attach_preview = QLabel("")
+        self._attach_preview.setObjectName("agent_attach_preview")
+        self._attach_preview.setVisible(False)
+        al.addWidget(self._attach_preview)
+
+        # ── Input bar: [📎] [prompt] [Send/Stop] ───────────────────────────────
+        input_row = QHBoxLayout()
+        input_row.setSpacing(4)
+        self._btn_attach = QPushButton("📎")
+        self._btn_attach.setObjectName("btn_attach")
+        self._btn_attach.setToolTip("Attach an image (PNG, JPG, GIF, WEBP)")
+        self._btn_attach.setFixedWidth(32)
+        self._btn_attach.setAutoDefault(False)
+        self._btn_attach.clicked.connect(self._attach_image)
+        input_row.addWidget(self._btn_attach)
+        self._agent_prompt = QTextEdit()
+        self._agent_prompt.setObjectName("agent_prompt")
+        self._agent_prompt.setPlaceholderText(
+            "Ask the agent… /summarize to compress history. (ANTHROPIC_API_KEY required)"
+        )
+        self._agent_prompt.setMaximumHeight(100)
+        input_row.addWidget(self._agent_prompt, stretch=1)
+        self._btn_send_stop = QPushButton("Send")
+        self._btn_send_stop.setObjectName("btn_send_stop")
+        self._btn_send_stop.setAutoDefault(False)
+        self._btn_send_stop.clicked.connect(self._on_send_stop_clicked)
+        input_row.addWidget(self._btn_send_stop)
+        al.addLayout(input_row)
+
         self._dock_agent = QDockWidget("Agent", self)
         self._dock_agent.setObjectName("dock_agent")
         self._dock_agent.setWidget(agent)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock_agent)
         self._apply_agent_availability()
         self._setup_agent_feed_html()
-        self._wire_agent_activity_animation()
-        self._wire_agent_send_button_pulse()
 
     def _apply_agent_dock_styles(self) -> None:
         if self._no_agent or self._agent_dock_root is None:
@@ -876,7 +837,8 @@ class MainWindow(QMainWindow):
         has = self._ctrl.has_anthropic_key()
         self._dock_agent.setEnabled(True)
         self._agent_prompt.setEnabled(has)
-        self._btn_send.setEnabled(has)
+        self._btn_send_stop.setEnabled(has)
+        self._btn_attach.setEnabled(has)
         if not has:
             self._agent_feed.setPlaceholderText(
                 "Agent disabled: set ANTHROPIC_API_KEY in File > Settings. "
@@ -1414,15 +1376,76 @@ class MainWindow(QMainWindow):
         self._decompiler.setFont(f)
         self._disasm.setFont(f)
 
+    def _on_send_stop_clicked(self) -> None:
+        if self._agent_generating:
+            self._ctrl.interrupt_agent()
+        else:
+            self._send_agent()
+
+    def _attach_image(self) -> None:
+        if self._no_agent:
+            return
+        fpath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Attach image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.gif *.webp);;All files (*)",
+        )
+        if not fpath:
+            return
+        path = Path(fpath)
+        suffix = path.suffix.lower()
+        media_types = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".webp": "image/webp",
+        }
+        media_type = media_types.get(suffix, "image/png")
+        try:
+            data = base64.standard_b64encode(path.read_bytes()).decode()
+        except OSError as e:
+            self.statusBar().showMessage(f"Could not read image: {e}", 5000)
+            return
+        self._pending_images.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        })
+        self._update_attach_preview()
+
+    def _update_attach_preview(self) -> None:
+        n = len(self._pending_images)
+        if n == 0:
+            self._attach_preview.setVisible(False)
+            self._attach_preview.clear()
+        else:
+            noun = "image" if n == 1 else "images"
+            self._attach_preview.setText(f"📎 {n} {noun} attached — will send with next message")
+            self._attach_preview.setVisible(True)
+
     def _send_agent(self) -> None:
         if self._no_agent:
             return
         raw = self._agent_prompt.toPlainText()
-        if not raw.strip():
+        if not raw.strip() and not self._pending_images:
             return
-        low = raw.strip().lower()
-        self._ctrl.send_agent_prompt(raw)
+        ts = datetime.now().strftime("%H:%M:%S")
+        esc = html.escape
+        # Show user message in feed immediately
+        text_display = esc(raw).replace('\n', '<br/>')
+        img_note = ""
+        if self._pending_images:
+            n = len(self._pending_images)
+            noun = "image" if n == 1 else "images"
+            img_note = f' <span class="rvmeta">[+{n} {noun}]</span>'
+        if raw.strip() or self._pending_images:
+            self._append_feed_html(
+                f'<div class="rvu"><span class="rvavatar">👤</span>'
+                f' <span class="rvmeta">[{esc(ts)}] you{img_note}</span><br/>{text_display}</div>'
+            )
+        images = list(self._pending_images) if self._pending_images else None
+        self._ctrl.send_agent_prompt(raw, images=images)
         self._agent_prompt.clear()
+        self._pending_images.clear()
+        self._update_attach_preview()
 
     def _new_agent_chat(self) -> None:
         if self._no_agent:
@@ -1480,31 +1503,45 @@ class MainWindow(QMainWindow):
         if kind == "agent_generating":
             self._set_agent_generating(bool(data.get("active")))
             return
+        if kind == "chat_title":
+            title = str(data.get("title", ""))
+            if title:
+                self._chat_title = title
+                self._chat_title_label.setText(f"— {esc(title)}")
+            return
         if kind == "assistant_stream_begin":
-            self._agent_stream_plain = ""
-            self._agent_live_stream.clear()
-            self._agent_live_thinking.clear()
-            self._agent_live_thinking.setVisible(False)
+            self._stream_ts = ts
+            self._stream_plain_parts = []
+            self._stream_start_pos = -1  # header inserted on first text delta
             return
         if kind == "assistant_text_delta":
             chunk = str(data.get("text", ""))
-            self._agent_stream_plain += chunk
-            display = self._agent_stream_plain
-            if len(display) > 14000:
-                display = "…\n" + display[-14000:]
-            self._agent_live_stream.setText(display)
-            self._agent_activity.setVisible(True)
+            if not chunk:
+                return
+            if self._stream_start_pos < 0:
+                # Insert the assistant bubble header on first delta
+                cursor = self._agent_feed.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self._stream_start_pos = cursor.position()
+                cursor.insertHtml(
+                    f'<div class="rva"><span class="rvavatar">◆</span>'
+                    f' <span class="rvmeta">[{esc(self._stream_ts)}] assistant</span><br/></div>'
+                )
+                self._agent_feed.setTextCursor(cursor)
+            self._stream_plain_parts.append(chunk)
+            cursor = self._agent_feed.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(chunk)
+            self._agent_feed.setTextCursor(cursor)
+            self._agent_feed.ensureCursorVisible()
             return
         if kind == "assistant_thinking_live":
             raw = str(data.get("text", ""))
             if not raw.strip():
                 return
-            display = raw
-            if len(display) > 12000:
-                display = "…\n" + display[-12000:]
-            self._agent_live_thinking.setText(display)
-            self._agent_live_thinking.setVisible(True)
-            self._agent_activity.setVisible(True)
+            display = raw[-300:] if len(raw) > 300 else raw
+            self._thinking_indicator.setText(f"💭 {display}")
+            self._thinking_indicator.setVisible(True)
             return
         if kind == "assistant_stream_end":
             return
@@ -1512,14 +1549,30 @@ class MainWindow(QMainWindow):
             text = str(data.get("text", ""))
             src = str(data.get("source", "agent"))
             label = "/summarize (result)" if src == "summarize" else "assistant"
-            body = self._assistant_body_from_markdown(text)
-            self._append_feed_html(
-                f'<div class="rva"><span class="rvmeta">[{esc(ts)}] {esc(label)}</span><br/>{body}</div>'
-            )
-            self._agent_live_stream.clear()
-            self._agent_stream_plain = ""
-            self._agent_live_thinking.clear()
-            self._agent_live_thinking.setVisible(False)
+            self._thinking_indicator.clear()
+            self._thinking_indicator.setVisible(False)
+            if self._stream_start_pos >= 0:
+                # Replace streamed plain text with formatted markdown HTML
+                cursor = self._agent_feed.textCursor()
+                cursor.setPosition(self._stream_start_pos)
+                cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+                body = self._assistant_body_from_markdown(text)
+                frag = (
+                    f'<div class="rva"><span class="rvavatar">◆</span>'
+                    f' <span class="rvmeta">[{esc(self._stream_ts)}] {esc(label)}</span><br/>{body}</div>'
+                )
+                cursor.insertHtml(frag)
+                self._agent_feed_html_chunks.append(frag)
+                self._stream_start_pos = -1
+                self._agent_feed.moveCursor(QTextCursor.MoveOperation.End)
+            else:
+                body = self._assistant_body_from_markdown(text)
+                self._append_feed_html(
+                    f'<div class="rva"><span class="rvavatar">◆</span>'
+                    f' <span class="rvmeta">[{esc(ts)}] {esc(label)}</span><br/>{body}</div>'
+                )
+            self._stream_plain_parts = []
             return
         if kind == "agent_notice":
             note = esc(str(data.get("message", "")))
@@ -1553,13 +1606,14 @@ class MainWindow(QMainWindow):
         if kind == "assistant_thinking":
             body = self._assistant_body_from_markdown(str(data.get("text", "")))
             self._append_feed_html(
-                f'<div class="rvt"><span class="rvmeta">[{esc(ts)}] thinking</span><br/>{body}</div>'
+                f'<div class="rvt"><span class="rvmeta">[{esc(ts)}] 💭 thinking</span><br/>{body}</div>'
             )
             return
         if kind == "assistant_text":
             body = self._assistant_body_from_markdown(str(data.get("text", "")))
             self._append_feed_html(
-                f'<div class="rva"><span class="rvmeta">[{esc(ts)}] assistant</span><br/>{body}</div>'
+                f'<div class="rva"><span class="rvavatar">◆</span>'
+                f' <span class="rvmeta">[{esc(ts)}] assistant</span><br/>{body}</div>'
             )
             return
         if kind == "tool_call":
@@ -1652,6 +1706,14 @@ class MainWindow(QMainWindow):
             self._append_feed_html(collapsed)
             return
         if kind in ("agent_done", "agent_stopped", "agent_error"):
+            # Clean up any pending stream bubble that didn't get a commit (e.g. interrupted)
+            if self._stream_start_pos >= 0:
+                cursor = self._agent_feed.textCursor()
+                cursor.setPosition(self._stream_start_pos)
+                cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+                self._stream_start_pos = -1
+                self._stream_plain_parts = []
             extra = esc(json.dumps(data, ensure_ascii=False)[:2000])
             self._append_feed_html(
                 f'<div class="rvmeta">[{esc(ts)}] {esc(kind)} {extra}</div>'

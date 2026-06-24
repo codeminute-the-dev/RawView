@@ -12,16 +12,20 @@ class ConversationMemory:
     max_messages: int = 24
     _messages: deque[dict[str, Any]] = field(default_factory=deque)
 
-    def add_user(self, text: str) -> None:
+    def add_user(self, content: str | list) -> None:
         self._trim()
-        if self._messages:
-            last = self._messages[-1]
-            if last.get("role") == "user":
-                prev = last.get("content")
-                if isinstance(prev, str):
-                    last["content"] = prev.rstrip() + "\n\n" + text.lstrip()
-                    return
-        self._messages.append({"role": "user", "content": text})
+        if isinstance(content, str):
+            if self._messages:
+                last = self._messages[-1]
+                if last.get("role") == "user":
+                    prev = last.get("content")
+                    if isinstance(prev, str):
+                        last["content"] = prev.rstrip() + "\n\n" + content.lstrip()
+                        return
+            self._messages.append({"role": "user", "content": content})
+        else:
+            # List content (e.g. image + text blocks) is never merged with a prior turn.
+            self._messages.append({"role": "user", "content": content})
 
     def add_assistant_blocks(self, blocks: list[dict[str, Any]]) -> None:
         self._trim()

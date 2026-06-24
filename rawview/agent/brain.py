@@ -72,7 +72,11 @@ def _block_to_api_dict(block: object) -> dict[str, Any] | None:
     if btype == "text":
         return {"type": "text", "text": getattr(block, "text", "")}
     if btype == "thinking":
-        return {"type": "thinking", "thinking": getattr(block, "thinking", "")}
+        d: dict[str, Any] = {"type": "thinking", "thinking": getattr(block, "thinking", "")}
+        sig = getattr(block, "signature", None)
+        if sig:
+            d["signature"] = sig
+        return d
     if btype == "redacted_thinking":
         return {"type": "redacted_thinking", "data": getattr(block, "data", "")}
     if btype == "tool_use":
@@ -82,6 +86,14 @@ def _block_to_api_dict(block: object) -> dict[str, Any] | None:
         inp = dict(raw_inp) if isinstance(raw_inp, dict) else {}
         return {"type": "tool_use", "id": tid, "name": name, "input": inp}
     return None
+
+
+def _use_adaptive_thinking(model: str) -> bool:
+    """Return True if the model supports adaptive thinking (Sonnet 4.6+, Opus 4.8+)."""
+    m = model.lower()
+    if "haiku" in m:
+        return False
+    return "claude-sonnet-4" in m or "claude-opus-4" in m
 
 
 class AgentBrain:
@@ -122,40 +134,34 @@ class AgentBrain:
         acc: list[str] = []
         stream_began = False
         msg: Any = None
-        use_thinking_stream = bool(params.get("thinking"))
         try:
             with stream_cm as stream:
                 self._emit("assistant_stream_begin", {})
                 stream_began = True
-                if use_thinking_stream:
-                    # ``text_stream`` omits thinking deltas; iterate the full stream so the UI can show reasoning.
-                    for chunk in stream:
-                        if self._interrupt.is_set():
-                            break
-                        ct = getattr(chunk, "type", None)
-                        if ct == "text":
-                            piece = getattr(chunk, "text", "") or ""
-                            if piece:
-                                acc.append(piece)
-                                self._emit("assistant_text_delta", {"text": piece})
-                        elif ct == "thinking":
-                            snap = getattr(chunk, "snapshot", None)
-                            piece = (
-                                snap
-                                if isinstance(snap, str) and snap
-                                else (getattr(chunk, "thinking", "") or "")
-                            )
-                            if piece:
-                                self._emit("assistant_thinking_live", {"text": str(piece)})
-                else:
-                    text_stream = getattr(stream, "text_stream", None)
-                    if text_stream is None:
-                        raise AttributeError("MessageStream has no text_stream")
-                    for text in text_stream:
-                        if self._interrupt.is_set():
-                            break
-                        acc.append(text)
-                        self._emit("assistant_text_delta", {"text": text})
+                # Unified event loop handles both text and thinking deltas.
+                for event in stream:
+                    if self._interrupt.is_set():
+                        # Return inside `with` — __exit__ closes the HTTP connection immediately.
+                        return None
+                    etype = getattr(event, "type", None)
+                    if etype != "content_block_delta":
+                        continue
+                    delta = getattr(event, "delta", None)
+                    if delta is None:
+                        continue
+                    dtype = getattr(delta, "type", None)
+                    if dtype == "text_delta":
+                        piece = getattr(delta, "text", "") or ""
+                        if piece:
+                            acc.append(piece)
+                            self._emit("assistant_text_delta", {"text": piece})
+                    elif dtype == "thinking_delta":
+                        piece = getattr(delta, "thinking", "") or ""
+                        if piece:
+                            self._emit("assistant_thinking_live", {"text": piece})
+                # True stop: do not call get_final_message (drains stream) if interrupted.
+                if self._interrupt.is_set():
+                    return None
                 try:
                     msg = stream.get_final_message()
                 except Exception as ge:
@@ -176,8 +182,8 @@ class AgentBrain:
         merged = "".join(acc) if acc else "".join(all_txt_parts)
         if not merged.strip():
             merged = "".join(all_txt_parts)
-        # With extended thinking, put reasoning in the scrollback before the assistant reply.
-        if msg is not None and use_thinking_stream:
+        # Emit committed thinking blocks before the assistant reply.
+        if msg is not None and params.get("thinking"):
             for block in msg.content:
                 bt = getattr(block, "type", None)
                 if bt == "thinking":
@@ -236,9 +242,42 @@ class AgentBrain:
     def clear_interrupt(self) -> None:
         self._interrupt.clear()
 
-    def run_user_prompt(self, text: str, *, goal: str | None = None) -> None:
+    def generate_chat_title(self, first_message: str) -> str:
+        """Generate a short 3-5 word chat title using Haiku. Returns empty string on any failure."""
+        try:
+            resp = self._client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=30,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Give a 3-5 word title for a conversation starting with this message. "
+                        "Reply with ONLY the title, no quotes or punctuation:\n\n"
+                        + first_message[:400]
+                    ),
+                }],
+            )
+            if resp.content:
+                return resp.content[0].text.strip()[:60]
+        except Exception:
+            pass
+        return ""
+
+    def run_user_prompt(
+        self,
+        text: str,
+        *,
+        goal: str | None = None,
+        images: list[dict[str, Any]] | None = None,
+    ) -> None:
         text = _expand_short_analyze_intent(text)
-        self._memory.add_user(text)
+        if images:
+            content: list[dict[str, Any]] = list(images)
+            if text.strip():
+                content.append({"type": "text", "text": text})
+            self._memory.add_user(content)
+        else:
+            self._memory.add_user(text)
         system = """
 You are RawView, the in-app reverse-engineering agent. You act on a live Ghidra session through tools - not from memory of binaries you have not inspected.
 
@@ -252,9 +291,9 @@ You are RawView, the in-app reverse-engineering agent. You act on a live Ghidra 
 - Default to tools over speculation. If you lack facts (addresses, names, xrefs), fetch them; do not invent addresses or behavior.
 - Work in tight loops: gather evidence → interpret → decide the next smallest tool step. Prefer incremental exploration over one giant assumption.
 - After tool results, answer the user in clear prose: what you checked, what you found, and what it implies. Quote symbols or addresses from tool output when it helps.
-- If the user’s target is ambiguous (multiple matches, unclear image base, vague “the crypto function”), ask one short clarifying question instead of guessing.
+- If the user's target is ambiguous (multiple matches, unclear image base, vague "the crypto function"), ask one short clarifying question instead of guessing.
 - **Batch analysis (File dock):** The user may queue several binaries in the UI. You only see that queue through **`analysis_batch_status`**, which returns **`items`**: each row has `index`, `basename`, and full `path`, plus `next_index` / `next_path`. Ghidra holds **one** program at a time.
-- When work spans multiple queued files, or the user mentions “next”, “batch”, “the queue”, or a filename from the list, call **`analysis_batch_status`** first, then **`analysis_batch_open_next`** (follow `next_index`) or **`analysis_batch_open_index`** with the chosen `index`. Prefer those over **`open_file`** alone so the batch cursor stays aligned with the UI (double-click / Open next).
+- When work spans multiple queued files, or the user mentions "next", "batch", "the queue", or a filename from the list, call **`analysis_batch_status`** first, then **`analysis_batch_open_next`** (follow `next_index`) or **`analysis_batch_open_index`** with the chosen `index`. Prefer those over **`open_file`** alone so the batch cursor stays aligned with the UI (double-click / Open next).
 
 ## Ghidra workflow (suggested order, adapt as needed)
 - Orientation: list_functions (with limit when the image is large), get_entry_points, get_imports/exports, get_strings as appropriate to map the surface.
@@ -263,16 +302,16 @@ You are RawView, the in-app reverse-engineering agent. You act on a live Ghidra 
 
 ## Memory (two stores)
 - **Conversation memory**: the `messages` you receive are the live chat transcript - prior **user** turns and **assistant** turns (assistant text plus tool calls; tool results arrive as following **user** messages per the API). Use them for continuity across sends. The UI may also show thinking that is **not** re-injected here to save context. When the user runs `/summarize`, older turns are replaced by a single bracketed Markdown summary - treat that block as authoritative shorthand for what was dropped.
-- **Long-term agent memory** (`read_agent_memory` / `append_agent_memory`): a Markdown file on disk that persists across sessions. Use it for stable, reusable facts (binary identity, key function addresses you verified, architecture, analysis plan). Read it when the user refers to “last time,” prior goals, or anything that might already be recorded. Before appending, read if the file may be large or you might duplicate content. Never store secrets, credentials, API keys, or private personal data - summaries only.
+- **Long-term agent memory** (`read_agent_memory` / `append_agent_memory`): a Markdown file on disk that persists across sessions. Use it for stable, reusable facts (binary identity, key function addresses you verified, architecture, analysis plan). Read it when the user refers to "last time," prior goals, or anything that might already be recorded. Before appending, read if the file may be large or you might duplicate content. Never store secrets, credentials, API keys, or private personal data - summaries only.
 - **Work dock** (`list_work_notes`, `read_work_markdown`, `append_work_markdown`): user-facing notes in the Work UI - prefer these for write-ups the human will edit alongside the session.
 
 ## Tools: how you must call them
-You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI change only when **the host executes a tool** after you issue a proper tool call. Explaining what you “would” do in chat **does nothing** unless a matching tool actually runs.
+You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI change only when **the host executes a tool** after you issue a proper tool call. Explaining what you "would" do in chat **does nothing** unless a matching tool actually runs.
 
 ### Put yourself in the right mode
 1. You see a **tools** list in the request (each entry: tool `name`, human-readable `description`, machine `input_schema`). That list is the **only** callable function names - no hidden APIs.
-2. Whenever you need **fresh data** from the binary (functions, strings, decompilation, xrefs, …), your next assistant turn should include a **`tool_use`** payload for that data. Guessing addresses or pasting fake JSON “results” in chat is a failure mode.
-3. Each call is one object with **exactly two** fields you control: **`name`** (string, must match a tool `name` character-for-character) and **`input`** (a JSON **object** of arguments). This is **Anthropic’s shape**, not OpenAI’s: there is **no** `function` wrapper, **no** `arguments` string field - only `name` + `input` as a parsed object. If your habits say “arguments”, translate them into **`input`** here.
+2. Whenever you need **fresh data** from the binary (functions, strings, decompilation, xrefs, …), your next assistant turn should include a **`tool_use`** payload for that data. Guessing addresses or pasting fake JSON "results" in chat is a failure mode.
+3. Each call is one object with **exactly two** fields you control: **`name`** (string, must match a tool `name` character-for-character) and **`input`** (a JSON **object** of arguments). This is **Anthropic's shape**, not OpenAI's: there is **no** `function` wrapper, **no** `arguments` string field - only `name` + `input` as a parsed object. If your habits say "arguments", translate them into **`input`** here.
 
 ### What you emit (concretely)
 - Your assistant message may contain normal **`text`** blocks (optional) plus one or more **`tool_use`** blocks. Only **`tool_use`** triggers execution.
@@ -297,7 +336,7 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 ### Frequent mistakes (avoid these)
 - Answering the user with a long analysis **without** having issued the `tool_use` that would have produced the underlying facts.
 - Putting the JSON arguments only inside a Markdown **code fence** in `text` - the runtime does **not** scrape code fences as tools.
-- Using keys your intuition likes (`addr`, `fn`, `file`) instead of the schema’s keys (`address`, `path`, …).
+- Using keys your intuition likes (`addr`, `fn`, `file`) instead of the schema's keys (`address`, `path`, …).
 - Passing `length` or `max_chars` as quoted strings - use numbers.
 - Calling `run_auto_analysis` with invented keys - its `input` is always `{}`.
 
@@ -340,20 +379,34 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 - **`user_tip`**: Short UI tip for the user. `input`: `message` (string, required); use sparingly.
 
 ### Policy reminders
-- **`open_file`**: new path on disk; defaults to full auto-analysis unless `run_auto_analysis` is false. Not for “refresh the listing” of an already loaded program.
+- **`open_file`**: new path on disk; defaults to full auto-analysis unless `run_auto_analysis` is false. Not for "refresh the listing" of an already loaded program.
 - **`run_auto_analysis`**: only the loaded program; if the user asks to analyze/re-analyze you **must** call this or `open_file`, never only describe doing so.
 - **`navigate_to`**: UI only; does not change analysis.
 - **`user_tip`**: rare UX hints - not where normal analysis belongs.
 
 ## Communication
-- Keep tool arguments minimal and valid per each tool’s schema; when unsure, read the tool’s `description` and `input_schema` in the tool list.
+- Keep tool arguments minimal and valid per each tool's schema; when unsure, read the tool's `description` and `input_schema` in the tool list.
 - State uncertainty and alternatives when decompilation or types are wrong or incomplete - that is normal in RE.
 - If a tool returns an error JSON, acknowledge it and recover (fix args, try another path, or ask the user).
 """.strip()
-        if goal:
-            system += f"\nPinned goal: {goal}"
 
-        tools = anthropic_tool_list(self._on_navigate, self._batch_port)
+        # Build tools list with cache_control on the last entry (caches tools + system together).
+        tools_raw = anthropic_tool_list(self._on_navigate, self._batch_port)
+        if tools_raw:
+            tools_cached = list(tools_raw)
+            last_tool = dict(tools_cached[-1])
+            last_tool["cache_control"] = {"type": "ephemeral"}
+            tools_cached[-1] = last_tool
+        else:
+            tools_cached = tools_raw
+
+        # Build system as list with cache_control; inject goal as prefix to keep the base cacheable.
+        system_text = system
+        if goal:
+            system_text = system + f"\n\nPinned goal: {goal}"
+        system_for_api: list[dict[str, Any]] = [
+            {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
+        ]
 
         for _ in range(self._max_turns):
             if self._interrupt.is_set():
@@ -362,32 +415,27 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
 
             base_kwargs: dict[str, Any] = {
                 "model": self._model,
-                "system": system,
+                "system": system_for_api,
                 "messages": self._memory.for_api(),
-                "tools": tools,
+                "tools": tools_cached,
                 "temperature": self._temperature,
             }
             msg = None
             streamed_turn = False
             try:
                 if self._extended_thinking:
-                    budget = int(self._thinking_budget_tokens)
-                    desired_max = max(8192, budget + 2048)
-                    api_max = max_output_tokens_for_claude_model(self._model)
-                    max_out = min(desired_max, api_max)
-                    if max_out < desired_max:
-                        logger.info(
-                            "Extended thinking: clamped max_tokens to %s for model %s (API max %s; implied %s)",
-                            max_out,
-                            self._model,
-                            api_max,
-                            desired_max,
-                        )
-                    budget = min(budget, max(1024, max_out - 2048))
-                    base_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                    base_kwargs["max_tokens"] = max_out
-                    # Anthropic: temperature must be exactly 1 when extended thinking is enabled.
-                    base_kwargs["temperature"] = 1.0
+                    if _use_adaptive_thinking(self._model):
+                        base_kwargs["thinking"] = {"type": "adaptive"}
+                        base_kwargs["max_tokens"] = 16000
+                        base_kwargs["temperature"] = 1.0
+                    else:
+                        budget = int(self._thinking_budget_tokens)
+                        api_max = max_output_tokens_for_claude_model(self._model)
+                        max_out = min(max(8192, budget + 2048), api_max)
+                        budget = min(budget, max(1024, max_out - 2048))
+                        base_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                        base_kwargs["max_tokens"] = max_out
+                        base_kwargs["temperature"] = 1.0
                 else:
                     base_kwargs["max_tokens"] = 8192
                 pair = self._invoke_messages_turn(base_kwargs)
@@ -441,6 +489,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
             assert msg is not None
             blocks_out: list[dict[str, Any]] = []
             tool_result_blocks: list[dict[str, Any]] = []
+            # Thinking blocks collected separately; included in history only when turn has tool_use.
+            thinking_blocks_this_turn: list[dict[str, Any]] = []
 
             for block in msg.content:
                 btype = getattr(block, "type", None)
@@ -451,15 +501,17 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                     bd = _block_to_api_dict(block)
                     if bd:
                         blocks_out.append(bd)
-                elif btype == "thinking":
-                    t = getattr(block, "thinking", "") or ""
-                    if not streamed_turn:
-                        self._emit("assistant_thinking", {"text": t})
-                    # Do not persist thinking in rolling memory: saves tokens and avoids replay constraints;
-                    # streamed turns emit thinking in ``_messages_turn_stream`` before ``assistant_stream_commit``.
-                elif btype == "redacted_thinking":
-                    if not streamed_turn:
-                        self._emit("assistant_thinking", {"text": "[redacted thinking block]"})
+                elif btype in ("thinking", "redacted_thinking"):
+                    if btype == "thinking":
+                        t = getattr(block, "thinking", "") or ""
+                        if not streamed_turn and t:
+                            self._emit("assistant_thinking", {"text": t})
+                    else:
+                        if not streamed_turn:
+                            self._emit("assistant_thinking", {"text": "[redacted thinking block]"})
+                    bd = _block_to_api_dict(block)
+                    if bd:
+                        thinking_blocks_this_turn.append(bd)
                 elif btype == "tool_use":
                     tid = getattr(block, "id", "")
                     name = getattr(block, "name", "")
@@ -485,6 +537,11 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                             "content": result,
                         }
                     )
+
+            # Thinking blocks must precede tool_use in history when continuing with tool results
+            # (API requires signed thinking blocks for multi-turn continuity).
+            if tool_result_blocks and thinking_blocks_this_turn:
+                blocks_out = thinking_blocks_this_turn + blocks_out
 
             if blocks_out:
                 self._memory.add_assistant_blocks(blocks_out)

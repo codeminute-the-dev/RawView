@@ -750,6 +750,8 @@ def agent_feed_document_default_stylesheet(theme_id: str) -> str:
             "body{font-family:'Segoe UI',Consolas,sans-serif;font-size:10pt;}"
             ".rvpre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:9.5pt;}"
             "code,pre{font-family:Consolas,monospace;font-size:9.5pt;}"
+            ".rvu{border-left:2px solid #888;padding-left:6px;margin:4px 0;}"
+            ".rvavatar{font-size:10pt;margin-right:4px;}"
             "a.rvlink:hover{text-decoration:underline;}"
         )
     c = _AGENT_DOCK_CHROME.get(tid) or _AGENT_DOCK_CHROME["tokyo_night"]
@@ -758,6 +760,9 @@ def agent_feed_document_default_stylesheet(theme_id: str) -> str:
         f"background:{c.html_body_bg};}}"
         f".rvt{{color:{c.html_rvt};font-style:italic;}}"
         f".rva{{color:{c.html_rva};line-height:1.45;}}"
+        f".rvu{{color:{c.html_meta};line-height:1.45;border-left:2px solid {c.html_meta};"
+        f"padding-left:6px;margin:4px 0;}}"
+        ".rvavatar{font-size:10pt;margin-right:4px;}"
         f".rvtool{{background:{c.html_tool_bg};border-left:3px solid {c.html_tool_border};"
         f"border-radius:4px;padding:8px 10px;margin:8px 0;}}"
         f".rvtool-fold{{border-left-color:{c.html_meta};}}"

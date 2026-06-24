@@ -101,10 +101,11 @@ class SettingsDialog(QDialog):
             "requests and uses this value only when thinking is off. "
             "Do not set top_p elsewhere - use temperature only."
         )
-        self._think = QCheckBox("Agent extended thinking (models that support it only)")
+        self._think = QCheckBox("Agent extended thinking (adaptive on Sonnet 4.6+, Opus 4.8+)")
         self._think.setToolTip(
-            "Anthropic requires streaming and temperature=1.0 while thinking is on; RawView applies both. "
-            "If the model rejects this option, RawView retries without extended thinking."
+            "Sonnet 4.6+ and Opus 4.8+ use adaptive thinking (model self-selects budget). "
+            "Older models (Haiku 4.5, etc.) use the thinking budget token count below. "
+            "RawView always retries without thinking if the model rejects it."
         )
         self._think_budget = QSpinBox()
         self._think_budget.setRange(1024, 100_000)
@@ -180,13 +181,6 @@ class SettingsDialog(QDialog):
         af.addRow("Agent max turns", self._max_turns)
         af.addRow("Agent history messages", self._hist)
         af.addRow("Agent temperature (0-1)", self._agent_temp)
-        self._economy = QCheckBox("Apply economy preset on save (lower agent API usage)")
-        self._economy.setToolTip(
-            "When checked and you click OK, saves shorter chat history (32 messages), fewer max turns (24), "
-            "disables extended thinking, and sets thinking budget to 2048 tokens. Uncheck to use the numeric "
-            "fields above instead."
-        )
-        af.addRow("", self._economy)
         self._agent_form_block.setVisible(controller.agent_enabled)
         if not controller.agent_enabled:
             self._no_agent_note = QLabel(
@@ -487,12 +481,6 @@ class SettingsDialog(QDialog):
             data["AGENT_TEMPERATURE"] = str(round(float(self._agent_temp.value()), 4))
             data["AGENT_EXTENDED_THINKING"] = "true" if self._think.isChecked() else "false"
             data["AGENT_THINKING_BUDGET_TOKENS"] = str(self._think_budget.value())
-            if self._economy.isChecked():
-                data["AGENT_HISTORY_MESSAGES"] = "32"
-                data["AGENT_MAX_TURNS"] = "24"
-                data["AGENT_EXTENDED_THINKING"] = "false"
-                data["AGENT_THINKING_BUDGET_TOKENS"] = "2048"
-
         save_user_settings_file(data)
         self._ctrl.reload_settings()
         self.accept()
