@@ -542,13 +542,16 @@ class MainWindow(QMainWindow):
         self._btn_fwd.clicked.connect(self._nav_forward)
         self._addr_edit = QLineEdit()
         self._addr_edit.setPlaceholderText("Address")
+        self._addr_edit.setMinimumWidth(0)
         self._rename_edit = QLineEdit()
         self._rename_edit.setPlaceholderText("New function name")
+        self._rename_edit.setMinimumWidth(0)
         btn_re = QPushButton("Rename function")
         btn_re.setIcon(qta.icon("fa6s.pen", color="#e0af68"))
         btn_re.clicked.connect(self._do_rename)
         self._comment_edit = QLineEdit()
         self._comment_edit.setPlaceholderText("EOL comment text")
+        self._comment_edit.setMinimumWidth(0)
         btn_co = QPushButton("Set comment")
         btn_co.setIcon(qta.icon("fa6s.comment", color="#73daca"))
         btn_co.clicked.connect(self._do_comment)
@@ -742,6 +745,8 @@ class MainWindow(QMainWindow):
 
     def _shrink_window_client_to_primary_screen(self) -> None:
         """Immediately after restoreGeometry: saved size may exceed the monitor even when dock minimum is fine."""
+        if self.isMaximized() or self.isFullScreen():
+            return
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             return
