@@ -11,8 +11,12 @@ from __future__ import annotations
 
 # (prefix, max_output_tokens): first matching prefix wins; list is most-specific first.
 _CLAUDE_MODEL_PREFIX_MAX_OUTPUT: tuple[tuple[str, int], ...] = (
-    # Claude 5 / 4.6 (latest)
+    # Claude 5 / 4.8 / 4.7 / 4.6 (latest)
+    ("claude-fable-5", 128_000),
+    ("claude-mythos-5", 128_000),
     ("claude-sonnet-5", 128_000),
+    ("claude-opus-4-8", 128_000),
+    ("claude-opus-4-7", 128_000),
     ("claude-opus-4-6", 128_000),
     ("claude-sonnet-4-6", 64_000),
     # Claude 4.5 / Haiku 4.5
@@ -60,3 +64,62 @@ def max_output_tokens_for_claude_model(model: str) -> int:
         if m.startswith(prefix):
             return cap
     return 8192
+
+
+# Models that reject temperature/top_p/top_k with HTTP 400 (sampling params removed).
+_NO_SAMPLING_PREFIXES: tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable",
+    "claude-mythos",
+)
+
+# Models where output_config effort "xhigh" is valid (added with Opus 4.7).
+_XHIGH_EFFORT_PREFIXES: tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable",
+    "claude-mythos",
+)
+
+
+def model_accepts_sampling_params(model: str) -> bool:
+    """False for models that reject temperature/top_p/top_k (Opus 4.7+/4.8, Sonnet 5, Fable/Mythos 5)."""
+    m = _normalize_claude_model_id(model)
+    return not any(m.startswith(p) for p in _NO_SAMPLING_PREFIXES)
+
+
+def model_uses_adaptive_thinking(model: str) -> bool:
+    """True for models that use adaptive thinking (and reject ``budget_tokens``): Sonnet 4.6+/5,
+    Opus 4.6+/4.7/4.8, Fable/Mythos 5. Haiku and older models still use ``budget_tokens``."""
+    m = _normalize_claude_model_id(model)
+    if "haiku" in m:
+        return False
+    return (
+        m.startswith("claude-sonnet-4")
+        or m.startswith("claude-sonnet-5")
+        or m.startswith("claude-opus-4")
+        or m.startswith("claude-fable")
+        or m.startswith("claude-mythos")
+    )
+
+
+def model_supports_xhigh_effort(model: str) -> bool:
+    m = _normalize_claude_model_id(model)
+    return any(m.startswith(p) for p in _XHIGH_EFFORT_PREFIXES)
+
+
+def effort_for_model(model: str, effort: str) -> str | None:
+    """Return the effort value to place in ``output_config``, or ``None`` to omit it.
+
+    Haiku 4.5 rejects ``output_config.effort`` -> ``None``. ``xhigh`` is only valid on
+    Opus 4.7/4.8, Sonnet 5, and Fable/Mythos 5 -> downgraded to ``high`` elsewhere.
+    """
+    m = _normalize_claude_model_id(model)
+    if "haiku" in m:
+        return None
+    if effort == "xhigh" and not model_supports_xhigh_effort(model):
+        return "high"
+    return effort

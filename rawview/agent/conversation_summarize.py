@@ -13,6 +13,7 @@ from rawview.agent.anthropic_backoff import (
     messages_create_with_backoff,
     messages_stream_with_backoff,
 )
+from rawview.agent.claude_model_limits import model_accepts_sampling_params
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +120,12 @@ def summarize_conversation_transcript(
     params: dict[str, Any] = {
         "model": model,
         "max_tokens": 8192,
-        "temperature": float(temperature),
         "system": _SUMMARY_SYSTEM,
         "messages": [{"role": "user", "content": transcript}],
     }
+    # Opus 4.7+/4.8, Sonnet 5, and Fable/Mythos 5 reject temperature (HTTP 400).
+    if model_accepts_sampling_params(model):
+        params["temperature"] = float(temperature)
 
     if hasattr(client.messages, "stream"):
         try:

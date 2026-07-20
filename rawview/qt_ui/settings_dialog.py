@@ -131,13 +131,14 @@ class SettingsDialog(QDialog):
             ("low", "Low: faster, shorter replies"),
             ("medium", "Medium (default)"),
             ("high", "High: deeper reasoning"),
-            ("xhigh", "xhigh: Opus 4.8 only"),
+            ("xhigh", "xhigh: Opus 4.7+, Sonnet 5, Fable 5"),
             ("max", "Max: maximum reasoning"),
         ]:
             self._effort_combo.addItem(label, val)
         self._effort_combo.setToolTip(
             "Controls how much reasoning effort the model applies (output_config.effort). "
-            "Low/medium/high/max: all current models. xhigh: Opus 4.8 only. "
+            "Low/medium/high/max: Opus, Sonnet, and Fable models. "
+            "xhigh: Opus 4.7/4.8, Sonnet 5, Fable 5 (auto-downgraded to high on models without it). "
             "Haiku 4.5 ignores this setting."
         )
         self._auto_bridge = QCheckBox("Start Ghidra JVM automatically when RawView launches")

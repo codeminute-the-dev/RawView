@@ -13,7 +13,12 @@ from rawview.agent.anthropic_backoff import (
     messages_create_with_backoff,
     messages_stream_with_backoff,
 )
-from rawview.agent.claude_model_limits import max_output_tokens_for_claude_model
+from rawview.agent.claude_model_limits import (
+    effort_for_model,
+    max_output_tokens_for_claude_model,
+    model_accepts_sampling_params,
+    model_uses_adaptive_thinking,
+)
 from rawview.agent.memory import ConversationMemory
 from rawview.agent.tools import AgentBatchToolPort, anthropic_tool_list, run_tool
 from rawview.ghidra.api import GhidraAPI
@@ -86,14 +91,6 @@ def _block_to_api_dict(block: object) -> dict[str, Any] | None:
         inp = dict(raw_inp) if isinstance(raw_inp, dict) else {}
         return {"type": "tool_use", "id": tid, "name": name, "input": inp}
     return None
-
-
-def _use_adaptive_thinking(model: str) -> bool:
-    """Return True if the model supports adaptive thinking (Sonnet 4.6+, Opus 4.8+)."""
-    m = model.lower()
-    if "haiku" in m:
-        return False
-    return "claude-sonnet-4" in m or "claude-opus-4" in m
 
 
 class AgentBrain:
@@ -420,17 +417,25 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                 "system": system_for_api,
                 "messages": self._memory.for_api(),
                 "tools": tools_cached,
-                "temperature": self._temperature,
-                "output_config": {"effort": self._effort},
             }
+            # Opus 4.7+/4.8, Sonnet 5, and Fable/Mythos 5 reject temperature (HTTP 400).
+            if model_accepts_sampling_params(self._model):
+                base_kwargs["temperature"] = self._temperature
+            # Haiku rejects effort; xhigh only exists on some models (helper clamps/omits).
+            eff = effort_for_model(self._model, self._effort)
+            if eff is not None:
+                base_kwargs["output_config"] = {"effort": eff}
             msg = None
             streamed_turn = False
             try:
                 if self._extended_thinking:
-                    if _use_adaptive_thinking(self._model):
+                    if model_uses_adaptive_thinking(self._model):
                         base_kwargs["thinking"] = {"type": "adaptive"}
                         base_kwargs["max_tokens"] = 16000
-                        base_kwargs["temperature"] = 1.0
+                        # Extended thinking wants temperature=1.0, but only send it on
+                        # models that accept sampling params at all (else it 400s).
+                        if "temperature" in base_kwargs:
+                            base_kwargs["temperature"] = 1.0
                     else:
                         budget = int(self._thinking_budget_tokens)
                         api_max = max_output_tokens_for_claude_model(self._model)
@@ -438,7 +443,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                         budget = min(budget, max(1024, max_out - 2048))
                         base_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                         base_kwargs["max_tokens"] = max_out
-                        base_kwargs["temperature"] = 1.0
+                        if "temperature" in base_kwargs:
+                            base_kwargs["temperature"] = 1.0
                 else:
                     base_kwargs["max_tokens"] = 8192
                 pair = self._invoke_messages_turn(base_kwargs)
@@ -449,7 +455,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                 logger.warning("messages API rejected thinking kwargs; retrying without thinking")
                 base_kwargs.pop("thinking", None)
                 base_kwargs["max_tokens"] = 8192
-                base_kwargs["temperature"] = self._temperature
+                if "temperature" in base_kwargs:
+                    base_kwargs["temperature"] = self._temperature
                 try:
                     pair = self._invoke_messages_turn(base_kwargs)
                     if pair is None:
@@ -464,7 +471,8 @@ You do **not** run Python, shell, or HTTP from here. Ghidra and the Work UI chan
                     logger.warning("Extended thinking failed (%s); retrying without it", e)
                     base_retry = {k: v for k, v in base_kwargs.items() if k != "thinking"}
                     base_retry["max_tokens"] = 8192
-                    base_retry["temperature"] = self._temperature
+                    if "temperature" in base_retry:
+                        base_retry["temperature"] = self._temperature
                     try:
                         pair = self._invoke_messages_turn(base_retry)
                         if pair is None:
