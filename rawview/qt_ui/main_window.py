@@ -875,6 +875,9 @@ class MainWindow(QMainWindow):
         if not self._did_show_reconcile:
             self._did_show_reconcile = True
             QTimer.singleShot(0, self._reconcile_window_with_screen)
+        if not self._re_recovery_checked:
+            self._re_recovery_checked = True
+            QTimer.singleShot(1200, self._try_re_crash_recovery)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -1853,12 +1856,6 @@ class MainWindow(QMainWindow):
             self._ctrl.apply_comment(addr, text)
         else:
             self.statusBar().showMessage("Enter an address in the Addr field to set a comment.", 6000)
-
-    def showEvent(self, event) -> None:  # type: ignore[override]
-        super().showEvent(event)
-        if not self._re_recovery_checked:
-            self._re_recovery_checked = True
-            QTimer.singleShot(1200, self._try_re_crash_recovery)
 
     def _try_re_crash_recovery(self) -> None:
         from rawview.re_session import mark_re_recovery_clean, re_autosave_zip_path, read_recovery_state
