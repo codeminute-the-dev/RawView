@@ -87,6 +87,7 @@ class SettingsDialog(QDialog):
             "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-opus-4-6",
+            "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-haiku-4-5",
             "claude-haiku-4-5-20251001",
@@ -363,7 +364,7 @@ class SettingsDialog(QDialog):
 
     def _on_model_changed(self, model: str) -> None:
         m = model.lower()
-        is_adaptive = ("claude-sonnet-4" in m or "claude-opus-4" in m or "claude-fable" in m or "claude-mythos" in m) and "haiku" not in m
+        is_adaptive = ("claude-sonnet-4" in m or "claude-sonnet-5" in m or "claude-opus-4" in m or "claude-fable" in m or "claude-mythos" in m) and "haiku" not in m
         self._think_budget.setEnabled(not is_adaptive)
         self._think_budget.setToolTip(
             "Not used for this model — it uses adaptive thinking (self-selects budget)."
