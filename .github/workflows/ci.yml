@@ -52,7 +52,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
 
       # PySide6 links Qt GUI libs (libEGL/libGL/...) at import time even under the
       # offscreen platform; ubuntu-latest doesn't ship them.
