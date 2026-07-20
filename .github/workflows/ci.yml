@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast gate: lint for real errors + byte-compile every source file ──────────
+  lint:
+    name: Lint & compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+
+      # Critical-error subset only (syntax errors, undefined names, bad f-strings,
+      # broken except/comparisons). No style noise, so this stays meaningful.
+      - name: Ruff (critical errors)
+        run: ruff check --select E9,F63,F7,F82 rawview
+
+      - name: Byte-compile all sources
+        run: python -m compileall -q rawview
+
+  # ── Import smoke: the package actually imports on supported Pythons ───────────
+  import-smoke:
+    name: Import smoke (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Import core modules (headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python - <<'PY'
+          import importlib
+
+          modules = [
+              "rawview.config",
+              "rawview.agent.claude_model_limits",
+              "rawview.agent.anthropic_backoff",
+              "rawview.agent.conversation_summarize",
+              "rawview.agent.brain",
+              "rawview.qt_ui.settings_dialog",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+              print("ok", name)
+          PY
