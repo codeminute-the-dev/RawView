@@ -24,6 +24,8 @@ AI-assisted reverse engineering for **Ghidra**: a **Qt (PySide6)** desktop app t
 
 **Discord:** [Codeminute's Discord Server](https://discord.gg/aHRjNzhNgk)
 
+**RawOS:** [RawView's Operating System](https://github.com/codeminute-the-dev/RawOS)
+
 ---
 
 ## Features
